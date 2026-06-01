@@ -18,14 +18,6 @@
           <text class="venue-chip">{{room.statusText}}</text>
           <text class="live-tag">{{room.liveTag}}</text>
         </view>
-        <view class="music-strip {{music.playing ? 'playing' : ''}}" bindtap="toggleMusic">
-          <view class="music-bars">
-            <text></text>
-            <text></text>
-            <text></text>
-          </view>
-          <text>{{music.playing ? '背景音乐播放中' : '开启台内背景音乐'}}</text>
-        </view>
         <view class="hero-title-row">
           <view>
             <text class="hero-title">{{room.title}}</text>

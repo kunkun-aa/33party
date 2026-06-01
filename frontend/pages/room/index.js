@@ -32,12 +32,7 @@ Page({
     voiceRecordSeconds: 0,
     voiceReview: null,
     chatScrollTarget: "",
-    quotedMessage: null,
-    music: {
-      playing: false,
-      title: "台内背景音乐",
-      src: "https://downsc.chinaz.net/Files/DownLoad/sound1/201906/11582.mp3"
-    }
+    quotedMessage: null
   },
 
   onLoad(options) {
@@ -47,7 +42,6 @@ Page({
     this.loadProfile();
     this.ensureOpenid();
     this.loadRoom(entry);
-    this.initMusic();
     this.initRecorder();
     this.initVoicePlayer();
   },
@@ -63,10 +57,6 @@ Page({
 
   onUnload() {
     this.closeRoomSocket();
-    if (this.musicContext) {
-      this.musicContext.stop();
-      this.musicContext.destroy();
-    }
     if (this.recordTimer) {
       clearInterval(this.recordTimer);
     }
@@ -283,36 +273,6 @@ Page({
       console.warn("用户资料同步失败，继续使用本地资料", error);
       return profileForm;
     }
-  },
-
-  initMusic() {
-    if (!wx.createInnerAudioContext) {
-      return;
-    }
-    this.musicContext = wx.createInnerAudioContext();
-    this.musicContext.loop = true;
-    this.musicContext.volume = 0.32;
-    this.musicContext.src = this.data.music.src;
-    this.musicContext.onPlay(() => this.setData({ "music.playing": true }));
-    this.musicContext.onPause(() => this.setData({ "music.playing": false }));
-    this.musicContext.onStop(() => this.setData({ "music.playing": false }));
-    this.musicContext.onError(() => {
-      this.setData({ "music.playing": false });
-      wx.showToast({ title: "音乐暂不可用", icon: "none" });
-    });
-    this.musicContext.play();
-  },
-
-  toggleMusic() {
-    if (!this.musicContext) {
-      this.initMusic();
-      return;
-    }
-    if (this.data.music.playing) {
-      this.musicContext.pause();
-      return;
-    }
-    this.musicContext.play();
   },
 
   initRecorder() {
