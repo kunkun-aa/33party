@@ -79,10 +79,13 @@ Page({
     this.setData({ loading: true });
     try {
       const room = await api.getRoomByEntry(entry);
+      const mergedRoom = this.mergeLocalRoomMessages(room);
       this.setData({
-        room: this.prepareFlashMessages(room),
+        room: this.prepareFlashMessages(mergedRoom),
         loading: false
       });
+      this.persistRoomMessages();
+      this.cacheVisibleMedia();
       this.startFlashCountdown();
       this.scrollChatToBottom();
     } catch (error) {
@@ -604,6 +607,7 @@ Page({
       return message;
     });
     this.setData({ "room.messages": messages });
+    this.persistRoomMessages();
   },
 
   toggleFlash() {
@@ -665,6 +669,8 @@ Page({
     this.setData({
       "room.messages": [...this.data.room.messages, nextMessage]
     });
+    this.persistRoomMessages();
+    this.cacheMessageMedia(nextMessage);
     this.startFlashCountdown();
     this.scrollChatToBottom();
   },
@@ -760,6 +766,7 @@ Page({
 
     if (changed) {
       this.setData({ "room.messages": nextMessages });
+      this.persistRoomMessages();
     }
     if (!hasActiveFlash) {
       this.stopFlashCountdown();
@@ -808,5 +815,85 @@ Page({
     const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
     const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
     return `${hour}:${minute}`;
+  },
+
+  getLocalMessageKey(room = this.data.room) {
+    if (!room || !room.partyId || !room.tableId) {
+      return "";
+    }
+    return `partyRoomMessages:${room.partyId}:${room.tableId}`;
+  },
+
+  mergeLocalRoomMessages(room) {
+    const key = this.getLocalMessageKey(room);
+    if (!key) {
+      return room;
+    }
+    const localMessages = wx.getStorageSync(key) || [];
+    const merged = [...localMessages, ...(room.messages || [])];
+    const seen = {};
+    const messages = [];
+    merged.forEach((message) => {
+      if (!message || !message.id || seen[message.id]) {
+        return;
+      }
+      seen[message.id] = true;
+      messages.push(message);
+    });
+    return {
+      ...room,
+      messages: messages.slice(-80)
+    };
+  },
+
+  persistRoomMessages() {
+    const room = this.data.room;
+    const key = this.getLocalMessageKey(room);
+    if (!key || !room || !room.messages) {
+      return;
+    }
+    const messages = room.messages
+      .filter((message) => message && !message.flashExpired)
+      .slice(-80);
+    wx.setStorageSync(key, messages);
+  },
+
+  cacheVisibleMedia() {
+    const messages = this.data.room && this.data.room.messages || [];
+    messages.forEach((message) => this.cacheMessageMedia(message));
+  },
+
+  cacheMessageMedia(message) {
+    if (!message || message.localCached || message.isFlash) {
+      return;
+    }
+    const mediaUrl = message.mediaUrl || message.image || message.video || message.voicePath || "";
+    if (!/^https?:\/\//.test(mediaUrl) || !wx.downloadFile || !wx.getFileSystemManager) {
+      return;
+    }
+    wx.downloadFile({
+      url: mediaUrl,
+      success: (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300 || !res.tempFilePath) {
+          return;
+        }
+        wx.getFileSystemManager().saveFile({
+          tempFilePath: res.tempFilePath,
+          success: (saveRes) => {
+            const savedPath = saveRes.savedFilePath;
+            const patch = { localCached: true, mediaUrl: savedPath };
+            if (message.type === "photo") {
+              patch.image = savedPath;
+            } else if (message.type === "video") {
+              patch.video = savedPath;
+            } else if (message.type === "voice") {
+              patch.voicePath = savedPath;
+            }
+            this.updateMessage(message.id, patch);
+            this.persistRoomMessages();
+          }
+        });
+      }
+    });
   }
 });

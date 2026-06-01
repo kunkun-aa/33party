@@ -9,6 +9,7 @@ import time
 import uuid
 import cgi
 import secrets
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -25,6 +26,9 @@ ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", ROOT / "uploads"))
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(80 * 1024 * 1024)))
+MESSAGE_RETENTION_HOURS = int(os.environ.get("MESSAGE_RETENTION_HOURS", "2"))
+UPLOAD_RETENTION_HOURS = int(os.environ.get("UPLOAD_RETENTION_HOURS", str(MESSAGE_RETENTION_HOURS)))
+CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", "900"))
 MINIPROGRAM_APPID = os.environ.get("WECHAT_MINIPROGRAM_APPID", "")
 MINIPROGRAM_SECRET = os.environ.get("WECHAT_MINIPROGRAM_SECRET", "")
 MINIPROGRAM_ENV_VERSION = os.environ.get("WECHAT_MINIPROGRAM_ENV_VERSION", "release")
@@ -37,6 +41,8 @@ MINIPROGRAM_ROOM_PAGE = "frontend/pages/room/index"
 MINIPROGRAM_ADMIN_PAGE = "frontend/pages/admin/index"
 TOKEN_CACHE = {"access_token": "", "expires_at": 0}
 ONLINE_WINDOW_SECONDS = int(os.environ.get("ONLINE_WINDOW_SECONDS", "300"))
+CLEANUP_STATE = {"last_run": 0}
+CLEANUP_LOCK = threading.Lock()
 
 
 def now_sql() -> str:
@@ -150,6 +156,7 @@ def init_db(seed: bool = True) -> None:
         migrate_db(conn)
         if seed:
             seed_db(conn)
+    maybe_cleanup_expired_content(force=True)
 
 
 def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -224,6 +231,114 @@ def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(party_id, table_id, id);
         """
     )
+
+
+def maybe_cleanup_expired_content(force: bool = False) -> None:
+    if MESSAGE_RETENTION_HOURS <= 0 and UPLOAD_RETENTION_HOURS <= 0:
+        return
+    now = time.time()
+    if not force and now - CLEANUP_STATE["last_run"] < CLEANUP_INTERVAL_SECONDS:
+        return
+    if not CLEANUP_LOCK.acquire(blocking=False):
+        return
+    try:
+        if force or now - CLEANUP_STATE["last_run"] >= CLEANUP_INTERVAL_SECONDS:
+            cleanup_expired_content()
+            CLEANUP_STATE["last_run"] = now
+    finally:
+        CLEANUP_LOCK.release()
+
+
+def cleanup_expired_content() -> dict:
+    deleted_messages = 0
+    deleted_files = 0
+    with connect() as conn:
+        media_urls: list[str] = []
+        if MESSAGE_RETENTION_HOURS > 0:
+            rows = conn.execute(
+                """
+                SELECT media_url, quote_media_url FROM messages
+                WHERE sender_type = 'user'
+                  AND kind IN ('text', 'voice', 'photo', 'video', 'photo_burst')
+                  AND created_at < datetime('now', '+8 hours', ?)
+                """,
+                (f"-{MESSAGE_RETENTION_HOURS} hours",),
+            ).fetchall()
+            for row in rows:
+                media_urls.extend([row["media_url"], row["quote_media_url"]])
+            cursor = conn.execute(
+                """
+                DELETE FROM messages
+                WHERE sender_type = 'user'
+                  AND kind IN ('text', 'voice', 'photo', 'video', 'photo_burst')
+                  AND created_at < datetime('now', '+8 hours', ?)
+                """,
+                (f"-{MESSAGE_RETENTION_HOURS} hours",),
+            )
+            deleted_messages = cursor.rowcount if cursor.rowcount != -1 else 0
+        active_urls = {
+            row["media_url"]
+            for row in conn.execute(
+                "SELECT media_url FROM messages WHERE media_url IS NOT NULL AND media_url != ''"
+            ).fetchall()
+        }
+
+    for media_url in media_urls:
+        if media_url and media_url not in active_urls:
+            deleted_files += 1 if delete_uploaded_media(media_url) else 0
+    deleted_files += cleanup_orphan_uploads(active_urls)
+    return {"messages": deleted_messages, "files": deleted_files}
+
+
+def cleanup_orphan_uploads(active_urls: set[str]) -> int:
+    if UPLOAD_RETENTION_HOURS <= 0 or not UPLOAD_DIR.exists():
+        return 0
+    cutoff = time.time() - UPLOAD_RETENTION_HOURS * 3600
+    deleted = 0
+    for file_path in UPLOAD_DIR.rglob("*"):
+        if not file_path.is_file():
+            continue
+        if file_path.stat().st_mtime > cutoff:
+            continue
+        url_path = f"/uploads/{file_path.relative_to(UPLOAD_DIR).as_posix()}"
+        if any(url_path in url for url in active_urls):
+            continue
+        try:
+            file_path.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    prune_empty_upload_dirs()
+    return deleted
+
+
+def delete_uploaded_media(media_url: str) -> bool:
+    parsed = urlparse(media_url)
+    if not parsed.path.startswith("/uploads/"):
+        return False
+    relative = parsed.path.removeprefix("/uploads/").strip("/")
+    if not relative or ".." in Path(relative).parts:
+        return False
+    file_path = (UPLOAD_DIR / relative).resolve()
+    upload_root = UPLOAD_DIR.resolve()
+    if upload_root not in file_path.parents or not file_path.is_file():
+        return False
+    try:
+        file_path.unlink()
+        prune_empty_upload_dirs()
+        return True
+    except OSError:
+        return False
+
+
+def prune_empty_upload_dirs() -> None:
+    if not UPLOAD_DIR.exists():
+        return
+    for directory in sorted((path for path in UPLOAD_DIR.rglob("*") if path.is_dir()), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 def seed_db(conn: sqlite3.Connection) -> None:
@@ -349,6 +464,7 @@ class PartyHandler(BaseHTTPRequestHandler):
 
     def handle_request(self, method: str) -> None:
         try:
+            maybe_cleanup_expired_content()
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
@@ -404,6 +520,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.set_table_head(body))
             elif method == "POST" and path == "/api/admin/members/kick":
                 self.respond(self.kick_member(body))
+            elif method == "POST" and path == "/api/admin/cleanup":
+                self.respond(self.cleanup_content(body))
             elif method == "POST" and path == "/api/contact/request":
                 self.respond(self.request_contact(body), status=201)
             else:
@@ -674,6 +792,9 @@ class PartyHandler(BaseHTTPRequestHandler):
         after_id = query.get("afterId")
         params: list = [party_id, table_id]
         where = "party_id = ? AND table_id = ?"
+        if MESSAGE_RETENTION_HOURS > 0:
+            where += " AND (sender_type != 'user' OR kind = 'system' OR created_at >= datetime('now', '+8 hours', ?))"
+            params.append(f"-{MESSAGE_RETENTION_HOURS} hours")
         if after_id:
             where += " AND id > ?"
             params.append(after_id)
@@ -783,6 +904,17 @@ class PartyHandler(BaseHTTPRequestHandler):
         body["kind"] = "photo"
         body["text"] = body.get("text") or "照片"
         return self.create_message(body)
+
+    def cleanup_content(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        result = cleanup_expired_content()
+        CLEANUP_STATE["last_run"] = time.time()
+        return {
+            "ok": True,
+            "retentionHours": MESSAGE_RETENTION_HOURS,
+            "uploadRetentionHours": UPLOAD_RETENTION_HOURS,
+            "deleted": result,
+        }
 
     def get_admin_tables(self, query: dict) -> dict:
         self.require_admin_request(query)
@@ -1081,14 +1213,19 @@ class PartyHandler(BaseHTTPRequestHandler):
             """,
             (party_id, table_id),
         ).fetchall()
+        message_where = "party_id = ? AND table_id = ?"
+        message_params: list = [party_id, table_id]
+        if MESSAGE_RETENTION_HOURS > 0:
+            message_where += " AND (sender_type != 'user' OR kind = 'system' OR created_at >= datetime('now', '+8 hours', ?))"
+            message_params.append(f"-{MESSAGE_RETENTION_HOURS} hours")
         messages = conn.execute(
-            """
+            f"""
             SELECT * FROM messages
-            WHERE party_id = ? AND table_id = ?
+            WHERE {message_where}
             ORDER BY created_at DESC, id DESC
             LIMIT 50
             """,
-            (party_id, table_id),
+            message_params,
         ).fetchall()
         return {
             "party": party,
