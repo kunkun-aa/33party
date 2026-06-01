@@ -236,6 +236,19 @@ def run() -> int:
             release_user_id = body["user"]["id"]
 
             status, body = post_json(
+                "/api/users/profile",
+                {
+                    "id": release_user_id,
+                    "nickname": "Release 用户二次保存",
+                    "avatarUrl": "https://dummyimage.com/160x160/102826/f6e7c8&text=R2",
+                    "gender": "unknown",
+                    "agreementAccepted": True,
+                    "ageConfirmed": True,
+                },
+            )
+            assert_true(status == 201 and body["user"]["id"] == release_user_id, "profile API should update cached user id without duplicate insert")
+
+            status, body = post_json(
                 "/api/party/join",
                 {
                     "partyId": "party_demo",

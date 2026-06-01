@@ -1024,9 +1024,11 @@ class PartyHandler(BaseHTTPRequestHandler):
             }
 
     def upsert_profile(self, body: dict) -> dict:
-        openid = body.get("openid") or f"mock_{uuid.uuid4().hex[:10]}"
+        supplied_openid = body.get("openid")
+        openid = supplied_openid or f"mock_{uuid.uuid4().hex[:10]}"
         nickname = body.get("nickname") or "新朋友"
-        user_id = body.get("id") or f"user_{uuid.uuid5(uuid.NAMESPACE_URL, openid).hex[:12]}"
+        requested_user_id = body.get("id")
+        user_id = requested_user_id or f"user_{uuid.uuid5(uuid.NAMESPACE_URL, openid).hex[:12]}"
         avatar_url = body.get("avatarUrl") or body.get("avatar_url")
         wechat_id = body.get("wechatId") or body.get("wechat_id")
         gender = body.get("gender") or "unknown"
@@ -1036,7 +1038,13 @@ class PartyHandler(BaseHTTPRequestHandler):
         age_requested = bool(body.get("ageConfirmed"))
 
         with connect() as conn:
-            existing = conn.execute("SELECT * FROM users WHERE openid = ?", (openid,)).fetchone()
+            existing_by_openid = conn.execute("SELECT * FROM users WHERE openid = ?", (openid,)).fetchone()
+            existing_by_id = None
+            if requested_user_id:
+                existing_by_id = conn.execute("SELECT * FROM users WHERE id = ?", (requested_user_id,)).fetchone()
+            existing = existing_by_openid or existing_by_id
+            if existing and not supplied_openid:
+                openid = existing["openid"] or openid
             agreement_accepted_at = existing["agreement_accepted_at"] if existing else None
             age_confirmed_at = existing["age_confirmed_at"] if existing else None
             if agreement_requested and not agreement_accepted_at:
@@ -1050,12 +1058,13 @@ class PartyHandler(BaseHTTPRequestHandler):
                 conn.execute(
                     """
                     UPDATE users
-                    SET nickname = ?, avatar_url = ?, gender = ?, phone = ?, wechat_id = ?,
+                    SET openid = ?, nickname = ?, avatar_url = ?, gender = ?, phone = ?, wechat_id = ?,
                         profile_complete = ?, agreement_accepted_at = ?, age_confirmed_at = ?,
                         updated_at = datetime('now', '+8 hours')
                     WHERE id = ?
                     """,
                     (
+                        openid,
                         nickname,
                         avatar_url,
                         gender,
