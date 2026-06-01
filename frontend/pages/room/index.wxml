@@ -196,12 +196,16 @@
 
     <view class="profile-mask" wx:if="{{!profileReady}}">
       <view class="profile-panel">
-        <text class="profile-kicker">首次进入</text>
-        <text class="profile-title">完善头像和昵称</text>
-        <text class="profile-copy">进入主局后，局头和同桌成员会看到你的资料。</text>
-        <view class="avatar-picker" bindtap="onPickAvatar">
-          <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
-          <text wx:else>选头像</text>
+        <view class="profile-head">
+          <view class="profile-heading">
+            <text class="profile-kicker">首次进入</text>
+            <text class="profile-title">完善头像和昵称</text>
+            <text class="profile-copy">进入主局后，局头和同桌成员会看到你的资料。</text>
+          </view>
+          <button class="avatar-picker" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+            <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
+            <text wx:else>选头像</text>
+          </button>
         </view>
         <input class="profile-input" type="nickname" value="{{profileForm.nickName}}" bindinput="onNickNameInput" placeholder="输入昵称" placeholder-class="input-placeholder" />
         <view class="gender-tabs">

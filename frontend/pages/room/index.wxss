@@ -882,7 +882,7 @@ page {
 .profile-input {
   width: 100%;
   height: 84rpx;
-  margin-top: 24rpx;
+  margin-top: 34rpx;
   background: rgba(255, 255, 255, 0.07);
   border-radius: 18rpx;
 }
@@ -1040,8 +1040,9 @@ page {
   left: 0;
   z-index: 10;
   display: flex;
-  align-items: flex-end;
-  padding: 34rpx;
+  align-items: center;
+  justify-content: center;
+  padding: 112rpx 34rpx 72rpx;
   box-sizing: border-box;
   background: radial-gradient(circle at 50% 100%, rgba(226, 178, 99, 0.14), transparent 40%), rgba(2, 3, 6, 0.78);
   animation: maskFadeIn 180ms ease both;
@@ -1050,15 +1051,16 @@ page {
 .profile-panel {
   position: relative;
   width: 100%;
-  padding: 38rpx;
+  max-width: 650rpx;
+  padding: 44rpx 40rpx 40rpx;
   overflow: hidden;
   background:
     linear-gradient(135deg, rgba(226, 178, 99, 0.13), rgba(91, 212, 199, 0.08) 48%, rgba(255, 255, 255, 0.065)),
     rgba(13, 16, 22, 0.88);
   border: 1rpx solid rgba(255, 255, 255, 0.12);
-  border-radius: 26rpx;
+  border-radius: 28rpx;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.1), 0 34rpx 120rpx rgba(0, 0, 0, 0.58), 0 0 48rpx rgba(226, 178, 99, 0.12);
-  transform-origin: 50% 100%;
+  transform-origin: 50% 62%;
   animation: sheetSpring 520ms cubic-bezier(0.16, 1.18, 0.28, 1) both;
 }
 
@@ -1075,7 +1077,21 @@ page {
   box-shadow: 0 0 36rpx rgba(215, 251, 82, 0.2);
 }
 
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 30rpx;
+  min-height: 172rpx;
+  padding-top: 10rpx;
+}
+
+.profile-heading {
+  flex: 1;
+  min-width: 0;
+}
+
 .profile-kicker {
+  display: block;
   color: #e2b263;
   font-size: 22rpx;
   font-weight: 900;
@@ -1083,42 +1099,48 @@ page {
 }
 
 .profile-title {
+  display: block;
   margin-top: 12rpx;
   color: #fff8ed;
-  font-size: 44rpx;
+  font-size: 42rpx;
   font-weight: 900;
-  line-height: 1.12;
+  line-height: 1.18;
 }
 
 .profile-copy {
-  margin-top: 12rpx;
+  display: block;
+  margin-top: 14rpx;
   font-size: 25rpx;
   line-height: 1.5;
 }
 
 .avatar-picker {
-  flex: 0 0 138rpx;
+  flex: 0 0 148rpx;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 138rpx;
-  height: 138rpx;
+  width: 148rpx;
+  height: 148rpx;
   min-height: 0;
-  max-width: 138rpx;
-  max-height: 138rpx;
-  margin: 30rpx 0 0;
+  max-width: 148rpx;
+  max-height: 148rpx;
+  margin: 0;
   padding: 0;
   overflow: hidden;
   color: rgba(255, 248, 237, 0.78);
   font-size: 24rpx;
   font-weight: 800;
-  line-height: 138rpx;
+  line-height: 148rpx;
   background: radial-gradient(circle at 50% 30%, rgba(226, 178, 99, 0.2), rgba(255, 255, 255, 0.07));
   border: 1rpx solid rgba(226, 178, 99, 0.25);
   border-radius: 999rpx;
   box-shadow: 0 0 34rpx rgba(226, 178, 99, 0.14);
   transform: translateZ(0);
   transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), box-shadow 160ms ease;
+}
+
+.avatar-picker::after {
+  border: 0;
 }
 
 .picked-avatar {
@@ -1128,7 +1150,7 @@ page {
 }
 
 .gender-tabs {
-  margin-top: 18rpx;
+  margin-top: 22rpx;
 }
 
 .gender-tab {
@@ -1142,7 +1164,7 @@ page {
   width: 100%;
   height: 86rpx;
   min-height: 0;
-  margin-top: 20rpx;
+  margin-top: 28rpx;
   line-height: 86rpx;
   box-shadow: 0 0 34rpx rgba(226, 178, 99, 0.26);
 }
