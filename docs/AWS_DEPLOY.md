@@ -69,6 +69,8 @@ REQUIRE_ADMIN_AUTH=1
 ADMIN_API_KEY=一串足够长的随机密钥
 WECHAT_MINIPROGRAM_APPID=你的小程序 AppID
 WECHAT_MINIPROGRAM_SECRET=你的小程序 AppSecret
+WECHAT_MESSAGE_TEMPLATE_ID=你的小程序订阅消息模板 ID
+WECHAT_MINIPROGRAM_ENV_VERSION=release
 ```
 
 生成随机管理员密钥示例：
@@ -147,7 +149,8 @@ const configs = {
     apiBaseUrl: "http://127.0.0.1:7893"
   },
   prod: {
-    apiBaseUrl: "https://你的真实API域名"
+    apiBaseUrl: "https://你的真实API域名",
+    messageTemplateId: ""
   }
 };
 ```
@@ -160,6 +163,14 @@ const configs = {
 
 - 开发管理 -> 开发设置 -> 服务器域名
 - `request 合法域名` 添加：`https://你的真实API域名`
+- `socket 合法域名` 添加：`wss://你的真实API域名`
+
+订阅消息需要在微信公众平台小程序后台配置：
+
+- 功能 -> 订阅消息
+- 添加用于“房间新消息提醒”的一次性订阅模板。
+- 把模板 ID 配置到后端环境变量 `WECHAT_MESSAGE_TEMPLATE_ID`。
+- 当前后端发送字段为 `thing1`、`thing2`、`thing3`、`thing4`，分别对应房间/主局、发送人、消息内容、桌号；如果微信模板关键词编号不同，需要同步调整 `backend/server.py` 中 `build_message_subscription_jobs` 的 `data` 字段。
 
 正式版不能使用 `http://127.0.0.1`，也不能依赖开发者工具里的“不校验合法域名”。
 
@@ -227,12 +238,15 @@ curl -o table_a01.png "https://你的真实API域名/api/admin/tables/qrcode?tab
 必须确认：
 
 - `config.js` 使用生产 HTTPS API 域名。
-- `deploy/backend.env.example` 已复制为 `/etc/33party/backend.env`，且真实服务器上的 `ADMIN_API_KEY`、`WECHAT_MINIPROGRAM_APPID`、`WECHAT_MINIPROGRAM_SECRET` 已替换。
-- 微信后台已配置合法 request 域名。
+- `deploy/backend.env.example` 已复制为 `/etc/33party/backend.env`，且真实服务器上的 `ADMIN_API_KEY`、`WECHAT_MINIPROGRAM_APPID`、`WECHAT_MINIPROGRAM_SECRET`、`WECHAT_MESSAGE_TEMPLATE_ID` 已替换。
+- 微信后台已配置合法 request 域名和 socket 合法域名。
+- 微信后台已配置订阅消息模板，模板关键词与后端发送字段一致。
 - `curl https://你的真实API域名/health` 正常。
 - `sudo systemctl status 33party` 显示服务为 `active (running)`。
 - `GET /api/admin/tables/invite` 能返回入局信息。
 - `GET /api/admin/tables/qrcode` 能返回 PNG。
 - 开发者工具中关闭“不校验合法域名”后仍能正常访问。
+- 真机点击“通知栏消息”能唤起微信订阅授权；离开小程序后，同桌新消息能出现在微信通知栏。
+- 真机房间内两台设备同时在线时，新消息能通过 WebSocket 即时出现。
 - 管理员入口不要公开给普通用户。
 - 不要上传本地测试数据库，例如 `tmp_publish_test.db`、`backend/party.db`。

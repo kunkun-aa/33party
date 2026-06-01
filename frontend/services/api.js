@@ -39,6 +39,24 @@ function request(path, options = {}) {
   });
 }
 
+function buildUrl(path, params = {}) {
+  const baseUrl = app.globalData.apiBaseUrl;
+  if (!baseUrl) {
+    return "";
+  }
+  return `${baseUrl}${path}${toQuery(params)}`;
+}
+
+function toWebSocketUrl(url = "") {
+  if (url.indexOf("https://") === 0) {
+    return `wss://${url.slice("https://".length)}`;
+  }
+  if (url.indexOf("http://") === 0) {
+    return `ws://${url.slice("http://".length)}`;
+  }
+  return url;
+}
+
 function isLocalFilePath(path = "") {
   return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
 }
@@ -100,6 +118,32 @@ function bindAdminOpenid(adminId, code, adminKey) {
       adminId,
       code
     }
+  });
+}
+
+function getConfig() {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({
+      messageTemplateId: app.globalData.messageTemplateId || "",
+      subscribeMessageEnabled: !!app.globalData.messageTemplateId
+    });
+  }
+  return request("/api/config").then((res) => {
+    app.globalData.messageTemplateId = res.messageTemplateId || app.globalData.messageTemplateId || "";
+    return res;
+  });
+}
+
+function userLogin(code) {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({
+      openid: `local_openid_${Date.now()}`,
+      user: null
+    });
+  }
+  return request("/api/users/login", {
+    method: "POST",
+    data: { code }
   });
 }
 
@@ -528,6 +572,23 @@ function updateUserProfile(profile) {
   }).then((res) => normalizeProfile(res.user));
 }
 
+function saveMessageSubscription(room, userId, status = "accepted", templateId = "") {
+  const targetTemplateId = templateId || app.globalData.messageTemplateId;
+  if (!app.globalData.apiBaseUrl || !room || !room.partyId || !room.tableId || !userId || !targetTemplateId) {
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+  return request("/api/messages/subscribe", {
+    method: "POST",
+    data: {
+      partyId: room.partyId,
+      tableId: room.tableId,
+      userId,
+      templateId: targetTemplateId,
+      status
+    }
+  });
+}
+
 async function sendRoomMessage(roomId, tableId, message) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({
@@ -569,6 +630,48 @@ function likeMessage(roomId, messageId) {
     method: "POST",
     data: { messageId }
   }).then((res) => normalizeMessage(res.message));
+}
+
+function connectRoomSocket(room, handlers = {}) {
+  if (!app.globalData.apiBaseUrl || !room || !room.partyId || !room.tableId || !wx.connectSocket) {
+    return null;
+  }
+  const url = toWebSocketUrl(buildUrl("/ws/room", {
+    partyId: room.partyId,
+    tableId: room.tableId,
+    userId: app.globalData.userProfile && app.globalData.userProfile.id
+  }));
+  const socketTask = wx.connectSocket({ url });
+  socketTask.onOpen(() => {
+    if (handlers.onOpen) {
+      handlers.onOpen();
+    }
+  });
+  socketTask.onMessage((event) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      return;
+    }
+    if ((payload.type === "message.created" || payload.type === "message.updated") && payload.message) {
+      payload.message = normalizeMessage(payload.message);
+    }
+    if (handlers.onMessage) {
+      handlers.onMessage(payload);
+    }
+  });
+  socketTask.onClose((event) => {
+    if (handlers.onClose) {
+      handlers.onClose(event);
+    }
+  });
+  socketTask.onError((error) => {
+    if (handlers.onError) {
+      handlers.onError(error);
+    }
+  });
+  return socketTask;
 }
 
 function setMemberSeat(memberId, seatStatus = "seated", adminKey = "") {
@@ -615,18 +718,22 @@ function recordManagerWechatAction(roomId, managerId) {
 
 module.exports = {
   getRoomByEntry,
+  getConfig,
   getAdminDashboard,
   adminLogin,
   bindAdminOpenid,
+  userLogin,
   getTableInvite,
   updateAdminProfile,
   createAdminParty,
   setTableHead,
   joinParty,
   updateUserProfile,
+  saveMessageSubscription,
   sendRoomMessage,
   uploadMedia,
   likeMessage,
+  connectRoomSocket,
   setMemberSeat,
   kickMember,
   recordManagerWechatAction

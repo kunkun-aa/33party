@@ -102,6 +102,20 @@ CREATE TABLE IF NOT EXISTS contact_requests (
   created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
+CREATE TABLE IF NOT EXISTS message_subscriptions (
+  id TEXT PRIMARY KEY,
+  party_id TEXT NOT NULL REFERENCES parties(id),
+  table_id TEXT NOT NULL REFERENCES party_tables(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  template_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'accepted' CHECK(status IN ('accepted', 'rejected')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_notified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+  UNIQUE(party_id, table_id, user_id, template_id)
+);
+
 CREATE TABLE IF NOT EXISTS admin_sessions (
   token TEXT PRIMARY KEY,
   admin_id TEXT NOT NULL REFERENCES admins(id),
@@ -115,4 +129,6 @@ CREATE INDEX IF NOT EXISTS idx_party_members_party ON party_members(party_id);
 CREATE INDEX IF NOT EXISTS idx_party_members_table ON party_members(table_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(party_id, table_id, id);
 CREATE INDEX IF NOT EXISTS idx_contact_requests_party ON contact_requests(party_id);
+CREATE INDEX IF NOT EXISTS idx_message_subscriptions_room ON message_subscriptions(party_id, table_id);
+CREATE INDEX IF NOT EXISTS idx_message_subscriptions_user ON message_subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id);

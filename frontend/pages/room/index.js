@@ -15,6 +15,10 @@ Page({
       nickName: "",
       gender: "unknown"
     },
+    notifyReady: false,
+    notifyEnabled: false,
+    notifySaving: false,
+    messageTemplateId: "",
     genderOptions: [
       { key: "female", label: "女" },
       { key: "male", label: "男" },
@@ -39,14 +43,26 @@ Page({
   onLoad(options) {
     const entry = parseEntry(options);
     this.setData({ entry });
+    this.loadRemoteConfig();
     this.loadProfile();
+    this.ensureOpenid();
     this.loadRoom(entry);
     this.initMusic();
     this.initRecorder();
     this.initVoicePlayer();
   },
 
+  onShow() {
+    this.roomSocketClosedByPage = false;
+    this.connectRoomSocket();
+  },
+
+  onHide() {
+    this.closeRoomSocket();
+  },
+
   onUnload() {
+    this.closeRoomSocket();
     if (this.musicContext) {
       this.musicContext.stop();
       this.musicContext.destroy();
@@ -75,6 +91,68 @@ Page({
     }
   },
 
+  async loadRemoteConfig() {
+    try {
+      const config = await api.getConfig();
+      this.setData({
+        messageTemplateId: config.messageTemplateId || app.globalData.messageTemplateId || "",
+        notifyReady: !!(config.messageTemplateId || app.globalData.messageTemplateId)
+      });
+    } catch (error) {
+      const templateId = app.globalData.messageTemplateId || "";
+      this.setData({
+        messageTemplateId: templateId,
+        notifyReady: !!templateId
+      });
+    }
+  },
+
+  ensureOpenid() {
+    const profile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile");
+    if (profile && profile.openid) {
+      return Promise.resolve(profile.openid);
+    }
+    if (!wx.login) {
+      return Promise.resolve("");
+    }
+    if (this.openidPromise) {
+      return this.openidPromise;
+    }
+    this.openidPromise = new Promise((resolve) => {
+      wx.login({
+        success: async (res) => {
+          if (!res.code) {
+            resolve("");
+            return;
+          }
+          try {
+            const loginRes = await api.userLogin(res.code);
+            const currentProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || {};
+            const nextProfile = {
+              ...currentProfile,
+              ...(loginRes.user || {}),
+              openid: loginRes.openid
+            };
+            app.saveUserProfile(nextProfile);
+            this.setData({
+              profileForm: {
+                ...this.data.profileForm,
+                ...(loginRes.user || {}),
+                openid: loginRes.openid
+              }
+            });
+            resolve(loginRes.openid || "");
+          } catch (error) {
+            console.warn("微信登录同步失败", error);
+            resolve("");
+          }
+        },
+        fail: () => resolve("")
+      });
+    });
+    return this.openidPromise;
+  },
+
   async loadRoom(entry) {
     this.setData({ loading: true });
     try {
@@ -88,6 +166,7 @@ Page({
       this.cacheVisibleMedia();
       this.startFlashCountdown();
       this.scrollChatToBottom();
+      this.connectRoomSocket();
     } catch (error) {
       console.warn("房间接口加载失败，已回退到本地演示数据", error);
       const room = this.prepareFlashMessages(buildRoom(entry));
@@ -156,8 +235,10 @@ Page({
       return;
     }
 
+    const openid = await this.ensureOpenid();
     const profile = await api.updateUserProfile({
       ...profileForm,
+      openid: profileForm.openid || openid,
       nickName: profileForm.nickName.trim(),
       gender: profileForm.gender || "unknown"
     });
@@ -172,6 +253,7 @@ Page({
       room: joinedRoom || this.data.room
     });
     this.scrollChatToBottom();
+    this.requestMessageSubscription();
   },
 
   async ensureProfileSynced() {
@@ -184,7 +266,11 @@ Page({
     }
 
     try {
-      const synced = await api.updateUserProfile(profileForm);
+      const openid = await this.ensureOpenid();
+      const synced = await api.updateUserProfile({
+        ...profileForm,
+        openid: profileForm.openid || openid
+      });
       const nextProfile = {
         ...profileForm,
         ...synced,
@@ -591,6 +677,31 @@ Page({
     }
   },
 
+  previewAvatar(event) {
+    const url = event.currentTarget.dataset.url;
+    if (!url) {
+      return;
+    }
+    const memberUrls = (this.data.room && this.data.room.members || [])
+      .map((member) => member.avatar)
+      .filter(Boolean);
+    const messageUrls = (this.data.room && this.data.room.messages || [])
+      .map((message) => message.avatar)
+      .filter(Boolean);
+    const seen = {};
+    const urls = [url, ...memberUrls, ...messageUrls].filter((item) => {
+      if (seen[item]) {
+        return false;
+      }
+      seen[item] = true;
+      return true;
+    });
+    wx.previewImage({
+      current: url,
+      urls: urls.length ? urls : [url]
+    });
+  },
+
   markVoicePlaying(id) {
     const messages = (this.data.room && this.data.room.messages || []).map((message) => ({
       ...message,
@@ -664,8 +775,41 @@ Page({
     });
   },
 
+  async requestMessageSubscription() {
+    if (this.data.notifySaving || this.data.notifyEnabled) {
+      return;
+    }
+    const room = this.data.room;
+    const templateId = this.data.messageTemplateId || app.globalData.messageTemplateId;
+    const openid = await this.ensureOpenid();
+    const profile = app.globalData.userProfile || this.data.profileForm;
+    if (!room || !templateId || !openid || !profile || !profile.id || !wx.requestSubscribeMessage) {
+      return;
+    }
+    this.setData({ notifySaving: true });
+    try {
+      const result = await new Promise((resolve, reject) => {
+        wx.requestSubscribeMessage({
+          tmplIds: [templateId],
+          success: resolve,
+          fail: reject
+        });
+      });
+      const status = result[templateId] === "accept" ? "accepted" : "rejected";
+      await api.saveMessageSubscription(room, profile.id, status, templateId);
+      this.setData({ notifyEnabled: status === "accepted" });
+    } catch (error) {
+      console.warn("订阅消息授权失败", error);
+    } finally {
+      this.setData({ notifySaving: false });
+    }
+  },
+
   appendMessage(message) {
     const nextMessage = this.prepareDisplayMessage(message);
+    if (!nextMessage || this.findMessageById(nextMessage.id)) {
+      return;
+    }
     this.setData({
       "room.messages": [...this.data.room.messages, nextMessage]
     });
@@ -673,6 +817,104 @@ Page({
     this.cacheMessageMedia(nextMessage);
     this.startFlashCountdown();
     this.scrollChatToBottom();
+  },
+
+  replaceMessage(message) {
+    const nextMessage = this.prepareDisplayMessage(message);
+    if (!nextMessage || !nextMessage.id || !this.data.room) {
+      return;
+    }
+    let replaced = false;
+    const messages = (this.data.room.messages || []).map((item) => {
+      if (item.id === nextMessage.id) {
+        replaced = true;
+        return {
+          ...item,
+          ...nextMessage
+        };
+      }
+      return item;
+    });
+    if (!replaced) {
+      messages.push(nextMessage);
+    }
+    this.setData({ "room.messages": messages });
+    this.persistRoomMessages();
+  },
+
+  connectRoomSocket() {
+    const room = this.data.room;
+    if (!room || this.roomSocket) {
+      return;
+    }
+    this.roomSocketClosedByPage = false;
+    const socketTask = api.connectRoomSocket(room, {
+      onOpen: () => {
+        this.roomSocketReconnectDelay = 1000;
+        this.sendRoomSocketPing();
+      },
+      onMessage: (payload) => this.handleRoomSocketMessage(payload),
+      onClose: () => this.scheduleRoomSocketReconnect(),
+      onError: (error) => {
+        console.warn("实时消息连接失败", error);
+      }
+    });
+    if (socketTask) {
+      this.roomSocket = socketTask;
+    }
+  },
+
+  closeRoomSocket() {
+    this.roomSocketClosedByPage = true;
+    if (this.roomSocketReconnectTimer) {
+      clearTimeout(this.roomSocketReconnectTimer);
+      this.roomSocketReconnectTimer = null;
+    }
+    if (this.roomSocketPingTimer) {
+      clearInterval(this.roomSocketPingTimer);
+      this.roomSocketPingTimer = null;
+    }
+    if (this.roomSocket) {
+      this.roomSocket.close();
+      this.roomSocket = null;
+    }
+  },
+
+  scheduleRoomSocketReconnect() {
+    this.roomSocket = null;
+    if (this.roomSocketClosedByPage || !this.data.room) {
+      return;
+    }
+    const delay = this.roomSocketReconnectDelay || 1000;
+    this.roomSocketReconnectDelay = Math.min(delay * 2, 15000);
+    if (this.roomSocketReconnectTimer) {
+      return;
+    }
+    this.roomSocketReconnectTimer = setTimeout(() => {
+      this.roomSocketReconnectTimer = null;
+      this.connectRoomSocket();
+    }, delay);
+  },
+
+  sendRoomSocketPing() {
+    if (this.roomSocketPingTimer) {
+      clearInterval(this.roomSocketPingTimer);
+    }
+    this.roomSocketPingTimer = setInterval(() => {
+      if (this.roomSocket) {
+        this.roomSocket.send({ data: JSON.stringify({ type: "ping" }) });
+      }
+    }, 30000);
+  },
+
+  handleRoomSocketMessage(payload = {}) {
+    if (payload.type === "message.created" && payload.message) {
+      this.appendMessage(payload.message);
+      return;
+    }
+    if (payload.type === "message.updated" && payload.message) {
+      this.replaceMessage(payload.message);
+    }
   },
 
   scrollChatToBottom() {

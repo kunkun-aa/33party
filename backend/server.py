@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import mimetypes
 import os
 import sqlite3
+import struct
 import sys
 import time
 import uuid
@@ -32,6 +35,12 @@ CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", "900")
 MINIPROGRAM_APPID = os.environ.get("WECHAT_MINIPROGRAM_APPID", "")
 MINIPROGRAM_SECRET = os.environ.get("WECHAT_MINIPROGRAM_SECRET", "")
 MINIPROGRAM_ENV_VERSION = os.environ.get("WECHAT_MINIPROGRAM_ENV_VERSION", "release")
+MINIPROGRAM_MESSAGE_TEMPLATE_ID = os.environ.get("WECHAT_MESSAGE_TEMPLATE_ID", "")
+DISABLE_WECHAT_SUBSCRIBE_SEND = os.environ.get("DISABLE_WECHAT_SUBSCRIBE_SEND", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 REQUIRE_ADMIN_AUTH = os.environ.get("REQUIRE_ADMIN_AUTH", "1" if APP_ENV == "production" else "0").lower() in {
     "1",
     "true",
@@ -43,6 +52,84 @@ TOKEN_CACHE = {"access_token": "", "expires_at": 0}
 ONLINE_WINDOW_SECONDS = int(os.environ.get("ONLINE_WINDOW_SECONDS", "300"))
 CLEANUP_STATE = {"last_run": 0}
 CLEANUP_LOCK = threading.Lock()
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def room_channel_key(party_id: str, table_id: str) -> str:
+    return f"{party_id}:{table_id}"
+
+
+class WebSocketClient:
+    def __init__(self, handler: "PartyHandler", party_id: str, table_id: str, user_id: str = ""):
+        self.handler = handler
+        self.party_id = party_id
+        self.table_id = table_id
+        self.user_id = user_id
+        self.channel_key = room_channel_key(party_id, table_id)
+        self.closed = False
+        self.send_lock = threading.Lock()
+
+    def send_json(self, payload: dict) -> bool:
+        try:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_frame(data, opcode=0x1)
+            return True
+        except OSError:
+            self.closed = True
+            return False
+
+    def send_frame(self, payload: bytes = b"", opcode: int = 0x1) -> None:
+        header = bytearray([0x80 | opcode])
+        length = len(payload)
+        if length < 126:
+            header.append(length)
+        elif length <= 0xFFFF:
+            header.append(126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(127)
+            header.extend(struct.pack("!Q", length))
+        with self.send_lock:
+            self.handler.wfile.write(bytes(header) + payload)
+            self.handler.wfile.flush()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.send_frame(b"", opcode=0x8)
+        except OSError:
+            pass
+
+
+class RoomWebSocketHub:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.clients_by_room: dict[str, set[WebSocketClient]] = {}
+
+    def add(self, client: WebSocketClient) -> None:
+        with self.lock:
+            self.clients_by_room.setdefault(client.channel_key, set()).add(client)
+
+    def remove(self, client: WebSocketClient) -> None:
+        with self.lock:
+            clients = self.clients_by_room.get(client.channel_key)
+            if not clients:
+                return
+            clients.discard(client)
+            if not clients:
+                self.clients_by_room.pop(client.channel_key, None)
+
+    def broadcast(self, channel_key: str, payload: dict) -> None:
+        with self.lock:
+            clients = list(self.clients_by_room.get(channel_key, set()))
+        for client in clients:
+            if not client.send_json(payload):
+                self.remove(client)
+
+
+ROOM_WS_HUB = RoomWebSocketHub()
 
 
 def now_sql() -> str:
@@ -136,6 +223,8 @@ def get_wechat_access_token() -> str:
 
 
 def code_to_openid(code: str) -> str:
+    if APP_ENV != "production" and not (MINIPROGRAM_APPID and MINIPROGRAM_SECRET):
+        return f"dev_openid_{uuid.uuid5(uuid.NAMESPACE_URL, code).hex[:16]}"
     if not MINIPROGRAM_APPID or not MINIPROGRAM_SECRET:
         raise ApiError(500, "缺少 WECHAT_MINIPROGRAM_APPID 或 WECHAT_MINIPROGRAM_SECRET")
     url = (
@@ -147,6 +236,57 @@ def code_to_openid(code: str) -> str:
     if not openid:
         raise ApiError(502, "微信登录未返回 openid")
     return openid
+
+
+def truncate_text(value: str, max_length: int = 20) -> str:
+    text = (value or "").strip()
+    if len(text) <= max_length:
+        return text
+    return f"{text[:max_length - 1]}…"
+
+
+def send_message_subscription_jobs(jobs: list[dict]) -> None:
+    if DISABLE_WECHAT_SUBSCRIBE_SEND or APP_ENV == "test":
+        with connect() as conn:
+            for job in jobs:
+                conn.execute(
+                    "UPDATE message_subscriptions SET last_notified_at = datetime('now', '+8 hours') WHERE id = ?",
+                    (job["subscriptionId"],),
+                )
+        return
+
+    token = ""
+    for job in jobs:
+        try:
+            if not token:
+                token = get_wechat_access_token()
+            url = f"https://api.weixin.qq.com/cgi-bin/message/subscribe/send?access_token={token}"
+            http_json(url, {
+                "touser": job["openid"],
+                "template_id": job["templateId"],
+                "page": job["page"],
+                "miniprogram_state": MINIPROGRAM_ENV_VERSION,
+                "lang": "zh_CN",
+                "data": job["data"],
+            })
+        except ApiError as exc:
+            print(f"subscribe message failed for {job['subscriptionId']}: {exc.message}")
+            if "43101" in exc.message:
+                with connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE message_subscriptions
+                        SET enabled = 0, status = 'rejected', updated_at = datetime('now', '+8 hours')
+                        WHERE id = ?
+                        """,
+                        (job["subscriptionId"],),
+                    )
+            continue
+        with connect() as conn:
+            conn.execute(
+                "UPDATE message_subscriptions SET last_notified_at = datetime('now', '+8 hours') WHERE id = ?",
+                (job["subscriptionId"],),
+            )
 
 
 def init_db(seed: bool = True) -> None:
@@ -186,6 +326,25 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE messages SET kind = 'photo' WHERE kind = 'photo_burst'")
     conn.execute("UPDATE messages SET text = REPLACE(text, '爆照一下，', '') WHERE text LIKE '%爆照一下%'")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_openid ON admins(openid)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS message_subscriptions (
+          id TEXT PRIMARY KEY,
+          party_id TEXT NOT NULL REFERENCES parties(id),
+          table_id TEXT NOT NULL REFERENCES party_tables(id),
+          user_id TEXT NOT NULL REFERENCES users(id),
+          template_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'accepted' CHECK(status IN ('accepted', 'rejected')),
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_notified_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+          UNIQUE(party_id, table_id, user_id, template_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_message_subscriptions_room ON message_subscriptions(party_id, table_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_message_subscriptions_user ON message_subscriptions(user_id)")
 
 
 def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
@@ -457,10 +616,115 @@ class PartyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        if self.is_websocket_request():
+            self.handle_websocket()
+            return
         self.handle_request("GET")
 
     def do_POST(self) -> None:
         self.handle_request("POST")
+
+    def is_websocket_request(self) -> bool:
+        return self.headers.get("Upgrade", "").lower() == "websocket"
+
+    def handle_websocket(self) -> None:
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path.rstrip("/") or "/"
+            if path != "/ws/room":
+                raise ApiError(404, "WebSocket 地址不存在")
+            query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+            client = self.accept_room_websocket(query)
+            ROOM_WS_HUB.add(client)
+            try:
+                client.send_json({
+                    "type": "connected",
+                    "partyId": client.party_id,
+                    "tableId": client.table_id,
+                })
+                self.websocket_read_loop(client)
+            finally:
+                ROOM_WS_HUB.remove(client)
+                client.closed = True
+        except ApiError as exc:
+            self.send_error(exc.status, exc.message)
+        except Exception as exc:  # pragma: no cover - keeps local dev debuggable.
+            self.send_error(500, str(exc))
+
+    def accept_room_websocket(self, query: dict) -> WebSocketClient:
+        party_id = require(query, "partyId")
+        table_id = require(query, "tableId")
+        user_id = query.get("userId", "")
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        if not key:
+            raise ApiError(400, "缺少 WebSocket Key")
+        with connect() as conn:
+            table = conn.execute(
+                "SELECT id FROM party_tables WHERE id = ? AND party_id = ?",
+                (table_id, party_id),
+            ).fetchone()
+            if not table:
+                raise ApiError(404, "桌台不存在")
+            if user_id:
+                self.touch_member(conn, party_id, table_id, user_id)
+        accept = base64.b64encode(hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()).decode("ascii")
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        return WebSocketClient(self, party_id, table_id, user_id)
+
+    def websocket_read_loop(self, client: WebSocketClient) -> None:
+        while not client.closed:
+            frame = self.read_websocket_frame()
+            if frame is None:
+                break
+            opcode, payload = frame
+            if opcode == 0x8:
+                client.close()
+                break
+            if opcode == 0x9:
+                client.send_frame(payload, opcode=0xA)
+            elif opcode == 0x1:
+                self.handle_websocket_message(client, payload)
+
+    def read_websocket_frame(self) -> tuple[int, bytes] | None:
+        header = self.rfile.read(2)
+        if len(header) < 2:
+            return None
+        first, second = header
+        opcode = first & 0x0F
+        masked = bool(second & 0x80)
+        length = second & 0x7F
+        if length == 126:
+            raw = self.rfile.read(2)
+            if len(raw) < 2:
+                return None
+            length = struct.unpack("!H", raw)[0]
+        elif length == 127:
+            raw = self.rfile.read(8)
+            if len(raw) < 8:
+                return None
+            length = struct.unpack("!Q", raw)[0]
+        mask = self.rfile.read(4) if masked else b""
+        payload = self.rfile.read(length) if length else b""
+        if len(payload) < length:
+            return None
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        return opcode, payload
+
+    def handle_websocket_message(self, client: WebSocketClient, payload: bytes) -> None:
+        try:
+            message = json.loads(payload.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            return
+        if message.get("type") == "ping":
+            if client.user_id:
+                with connect() as conn:
+                    self.touch_member(conn, client.party_id, client.table_id, client.user_id)
+            client.send_json({"type": "pong", "serverTime": int(time.time())})
 
     def handle_request(self, method: str) -> None:
         try:
@@ -481,7 +745,11 @@ class PartyHandler(BaseHTTPRequestHandler):
                     "roomPage": MINIPROGRAM_ROOM_PAGE,
                     "adminPage": MINIPROGRAM_ADMIN_PAGE,
                     "envVersion": MINIPROGRAM_ENV_VERSION,
+                    "messageTemplateId": MINIPROGRAM_MESSAGE_TEMPLATE_ID,
+                    "subscribeMessageEnabled": bool(MINIPROGRAM_MESSAGE_TEMPLATE_ID),
                 })
+            elif method == "POST" and path == "/api/users/login":
+                self.respond(self.user_login(body), status=201)
             elif method == "GET" and path == "/api/party/by-scene":
                 self.respond(self.get_party_by_scene(query))
             elif method == "POST" and path == "/api/admin/login":
@@ -500,6 +768,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.create_message(body), status=201)
             elif method == "POST" and path == "/api/messages/like":
                 self.respond(self.like_message(body), status=201)
+            elif method == "POST" and path == "/api/messages/subscribe":
+                self.respond(self.save_message_subscription(body), status=201)
             elif method == "POST" and path == "/api/uploads":
                 self.respond(self.upload_media(body), status=201)
             elif method == "POST" and path == "/api/photo-burst":
@@ -628,6 +898,17 @@ class PartyHandler(BaseHTTPRequestHandler):
                 ).fetchone()
                 table_id = first_table["id"] if first_table else None
             return {"ok": True, "party": self.load_party(conn, party_id), "defaultTableId": table_id}
+
+    def user_login(self, body: dict) -> dict:
+        code = require(body, "code")
+        openid = code_to_openid(code)
+        with connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE openid = ?", (openid,)).fetchone()
+            return {
+                "ok": True,
+                "openid": openid,
+                "user": public_user(user) if user else None,
+            }
 
     def admin_login(self, body: dict) -> dict:
         admin_id = body.get("adminId", "admin_mimei")
@@ -849,7 +1130,122 @@ class PartyHandler(BaseHTTPRequestHandler):
                 ),
             )
             row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
-            return {"ok": True, "message": self.decorate_message(conn, row)}
+            message = self.decorate_message(conn, row)
+            notification_jobs = self.build_message_subscription_jobs(conn, row, message)
+        ROOM_WS_HUB.broadcast(room_channel_key(party_id, table_id), {
+            "type": "message.created",
+            "partyId": party_id,
+            "tableId": table_id,
+            "message": message,
+        })
+        self.dispatch_message_subscription_jobs(notification_jobs)
+        return {"ok": True, "message": message}
+
+    def build_message_subscription_jobs(self, conn: sqlite3.Connection, row: sqlite3.Row, message: dict) -> list[dict]:
+        if not MINIPROGRAM_MESSAGE_TEMPLATE_ID or row["sender_type"] != "user" or row["kind"] == "system":
+            return []
+        party = self.load_party(conn, row["party_id"])
+        table = conn.execute("SELECT table_no FROM party_tables WHERE id = ?", (row["table_id"],)).fetchone()
+        sender = message.get("sender") or {}
+        sender_name = sender.get("nickname") or sender.get("displayName") or "同桌成员"
+        content = message.get("text") or {
+            "voice": "发来一条语音消息",
+            "photo": "发来一张照片",
+            "video": "发来一段视频",
+            "photo_burst": "发来一张照片",
+        }.get(row["kind"], "有一条新消息")
+        page = f"{MINIPROGRAM_ROOM_PAGE}?partyId={row['party_id']}&tableId={row['table_id']}"
+        data = {
+            "thing1": {"value": truncate_text(party["title"] if party else "33party 房间")},
+            "thing2": {"value": truncate_text(sender_name)},
+            "thing3": {"value": truncate_text(content)},
+            "thing4": {"value": truncate_text(table["table_no"] if table else "房间")},
+        }
+        subscriptions = conn.execute(
+            """
+            SELECT ms.*, u.openid
+            FROM message_subscriptions ms
+            JOIN users u ON u.id = ms.user_id
+            WHERE ms.party_id = ? AND ms.table_id = ? AND ms.template_id = ?
+              AND ms.status = 'accepted' AND ms.enabled = 1
+              AND ms.user_id != ? AND u.openid IS NOT NULL AND u.openid != ''
+            """,
+            (row["party_id"], row["table_id"], MINIPROGRAM_MESSAGE_TEMPLATE_ID, row["sender_id"]),
+        ).fetchall()
+        return [
+            {
+                "subscriptionId": subscription["id"],
+                "openid": subscription["openid"],
+                "templateId": subscription["template_id"],
+                "page": page,
+                "data": data,
+            }
+            for subscription in subscriptions
+        ]
+
+    def dispatch_message_subscription_jobs(self, jobs: list[dict]) -> None:
+        if not jobs:
+            return
+        thread = threading.Thread(
+            target=send_message_subscription_jobs,
+            args=(jobs,),
+            name="message-subscription-send",
+            daemon=True,
+        )
+        thread.start()
+
+    def save_message_subscription(self, body: dict) -> dict:
+        party_id = require(body, "partyId")
+        table_id = require(body, "tableId")
+        user_id = require(body, "userId")
+        template_id = body.get("templateId") or MINIPROGRAM_MESSAGE_TEMPLATE_ID
+        if not template_id:
+            raise ApiError(400, "缺少订阅消息模板 ID")
+        status = body.get("status") or "accepted"
+        if status not in {"accepted", "rejected"}:
+            raise ApiError(400, "订阅状态必须是 accepted 或 rejected")
+        enabled = 1 if status == "accepted" and body.get("enabled", True) else 0
+        with connect() as conn:
+            table = conn.execute(
+                "SELECT id FROM party_tables WHERE id = ? AND party_id = ?",
+                (table_id, party_id),
+            ).fetchone()
+            if not table:
+                raise ApiError(404, "桌台不存在")
+            user = conn.execute("SELECT id, openid FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                raise ApiError(404, "用户不存在")
+            if not user["openid"]:
+                raise ApiError(400, "用户缺少 openid，无法接收微信订阅消息")
+            existing = conn.execute(
+                """
+                SELECT id FROM message_subscriptions
+                WHERE party_id = ? AND table_id = ? AND user_id = ? AND template_id = ?
+                """,
+                (party_id, table_id, user_id, template_id),
+            ).fetchone()
+            if existing:
+                sub_id = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE message_subscriptions
+                    SET status = ?, enabled = ?, updated_at = datetime('now', '+8 hours')
+                    WHERE id = ?
+                    """,
+                    (status, enabled, sub_id),
+                )
+            else:
+                sub_id = new_id("sub")
+                conn.execute(
+                    """
+                    INSERT INTO message_subscriptions
+                      (id, party_id, table_id, user_id, template_id, status, enabled)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (sub_id, party_id, table_id, user_id, template_id, status, enabled),
+                )
+            subscription = conn.execute("SELECT * FROM message_subscriptions WHERE id = ?", (sub_id,)).fetchone()
+            return {"ok": True, "subscription": row_to_dict(subscription)}
 
     def upload_media(self, body: dict) -> dict:
         file = body.get("file")
@@ -898,7 +1294,14 @@ class PartyHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "消息不存在")
             conn.execute("UPDATE messages SET like_count = like_count + 1 WHERE id = ?", (message_id,))
             updated = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
-            return {"ok": True, "message": self.decorate_message(conn, updated)}
+            message = self.decorate_message(conn, updated)
+            ROOM_WS_HUB.broadcast(room_channel_key(row["party_id"], row["table_id"]), {
+                "type": "message.updated",
+                "partyId": row["party_id"],
+                "tableId": row["table_id"],
+                "message": message,
+            })
+            return {"ok": True, "message": message}
 
     def create_photo_burst(self, body: dict) -> dict:
         body["kind"] = "photo"

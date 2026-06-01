@@ -39,6 +39,13 @@
           </view>
           <view class="contact-button" bindtap="onCopyManagerWechat">复制</view>
         </view>
+        <view class="room-notify-strip" wx:if="{{profileReady && notifyReady}}" bindtap="requestMessageSubscription">
+          <view>
+            <text class="room-notify-title">通知栏消息</text>
+            <text class="room-notify-copy">{{notifyEnabled ? '已开启，离开后也能收到同桌新消息' : '离开小程序后接收同桌新消息'}}</text>
+          </view>
+          <text class="room-notify-state">{{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}</text>
+        </view>
       </view>
 
       <view class="info-band">
@@ -73,7 +80,7 @@
         </view>
         <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
           <view class="member-card" wx:for="{{room.members}}" wx:key="id">
-            <view class="avatar-wrap">
+            <view class="avatar-wrap" data-url="{{item.avatar}}" bindtap="previewAvatar">
               <image class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
             </view>
@@ -89,7 +96,7 @@
         </view>
         <view class="message-list">
           <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindlongpress="onQuoteMessage">
-            <image class="message-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
+            <image class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" bindtap="previewAvatar"></image>
             <view class="message-body">
               <view class="message-meta">
                 <text class="message-name">{{item.sender}}</text>
@@ -216,6 +223,15 @@
             data-gender="{{item.key}}"
             bindtap="onGenderTap"
           >{{item.label}}</button>
+        </view>
+        <view class="notify-row" wx:if="{{notifyReady}}">
+          <view>
+            <text class="notify-title">通知栏消息</text>
+            <text class="notify-copy">{{notifyEnabled ? '已开启，新消息会进入微信通知栏' : '离开小程序后接收同桌新消息'}}</text>
+          </view>
+          <button class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bindtap="requestMessageSubscription">
+            {{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}
+          </button>
         </view>
         <button class="profile-submit" bindtap="onSaveProfile">进入主局</button>
       </view>
