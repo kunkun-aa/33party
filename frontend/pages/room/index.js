@@ -27,6 +27,7 @@ Page({
     voiceRecording: false,
     voiceRecordSeconds: 0,
     voiceReview: null,
+    chatScrollTarget: "",
     music: {
       playing: false,
       title: "台内背景音乐",
@@ -77,6 +78,7 @@ Page({
         loading: false
       });
       this.startFlashCountdown();
+      this.scrollChatToBottom();
     } catch (error) {
       console.warn("房间接口加载失败，已回退到本地演示数据", error);
       const room = this.prepareFlashMessages(buildRoom(entry));
@@ -85,6 +87,7 @@ Page({
         loading: false
       });
       this.startFlashCountdown();
+      this.scrollChatToBottom();
       wx.showToast({
         title: "后端连接失败，已显示演示数据",
         icon: "none"
@@ -159,6 +162,7 @@ Page({
       profileForm: profile,
       room: joinedRoom || this.data.room
     });
+    this.scrollChatToBottom();
   },
 
   async ensureProfileSynced() {
@@ -521,6 +525,14 @@ Page({
       "room.messages": [...this.data.room.messages, nextMessage]
     });
     this.startFlashCountdown();
+    this.scrollChatToBottom();
+  },
+
+  scrollChatToBottom() {
+    this.setData({ chatScrollTarget: "" });
+    setTimeout(() => {
+      this.setData({ chatScrollTarget: "chat-bottom" });
+    }, 80);
   },
 
   prepareFlashMessages(room) {
@@ -545,6 +557,7 @@ Page({
       flashStartedAt,
       flashExpiresAt: message.flashExpiresAt || (expiresAt ? new Date(expiresAt).toISOString() : ""),
       flashRemainingSeconds: remaining,
+      flashCountdownText: `${remaining} 秒后自动销毁`,
       flashExpired: message.flashExpired || remaining <= 0
     };
   },
@@ -585,6 +598,7 @@ Page({
       return {
         ...message,
         flashRemainingSeconds: remaining,
+        flashCountdownText: `${remaining} 秒后自动销毁`,
         flashExpired: remaining <= 0
       };
     });

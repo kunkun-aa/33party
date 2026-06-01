@@ -29,7 +29,7 @@ page {
   pointer-events: none;
   background: linear-gradient(105deg, transparent, rgba(226, 178, 99, 0.1), transparent);
   transform: skewX(-18deg);
-  animation: sweep 7s ease-in-out infinite;
+  animation: sweep 9s ease-in-out infinite;
 }
 
 .room-page::after {
@@ -52,10 +52,11 @@ page {
   width: 440rpx;
   height: 440rpx;
   border-radius: 50%;
-  filter: blur(60rpx);
-  opacity: 0.42;
+  filter: blur(52rpx);
+  opacity: 0.36;
   pointer-events: none;
-  animation: breatheGlow 5.8s ease-in-out infinite;
+  transform: translateZ(0);
+  animation: breatheGlow 7s ease-in-out infinite;
 }
 
 .ambient-left {
@@ -84,11 +85,13 @@ page {
   min-height: 0;
   padding-bottom: calc(190rpx + env(safe-area-inset-bottom));
   box-sizing: border-box;
+  transform: translateZ(0);
 }
 
 .hero {
   position: relative;
   padding: 86rpx 32rpx 30rpx;
+  animation: contentRise 420ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
 }
 
 .hero-topline,
@@ -196,11 +199,12 @@ page {
   border: 1rpx solid rgba(255, 255, 255, 0.1);
   border-radius: 999rpx;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.08), 0 14rpx 42rpx rgba(0, 0, 0, 0.2);
-  transition: all 0.25s ease;
+  transform: translateZ(0);
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.2, 1), border-color 180ms ease, background-color 180ms ease;
 }
 
 .music-strip:active {
-  transform: scale(0.96);
+  transform: translateZ(0) scale(0.96);
 }
 
 .music-strip.playing {
@@ -292,7 +296,7 @@ page {
   font-weight: 900;
   line-height: 68rpx;
   border-radius: 50%;
-  transition: all 0.25s ease;
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.2, 1), box-shadow 180ms ease;
 }
 
 .contact-button {
@@ -309,7 +313,8 @@ page {
 
 .contact-button:active,
 .map-button:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
+  animation: tapElastic 260ms cubic-bezier(0.2, 0.95, 0.35, 1);
 }
 
 .info-band,
@@ -323,6 +328,7 @@ page {
   border: 1rpx solid rgba(255, 255, 255, 0.09);
   border-radius: 20rpx;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.06), 0 24rpx 70rpx rgba(0, 0, 0, 0.3);
+  animation: contentRise 480ms 40ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
 }
 
 .info-grid {
@@ -373,6 +379,7 @@ page {
 .section {
   position: relative;
   z-index: 1;
+  animation: contentRise 520ms 80ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
 }
 
 .section-head {
@@ -406,12 +413,13 @@ page {
   border: 1rpx solid rgba(255, 255, 255, 0.09);
   border-radius: 20rpx;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.05), 0 16rpx 42rpx rgba(0, 0, 0, 0.22);
-  transition: all 0.25s ease;
+  transform: translateZ(0);
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.2, 1), border-color 180ms ease;
 }
 
 .member-card:active {
   border-color: rgba(226, 178, 99, 0.42);
-  transform: scale(0.96);
+  transform: translateZ(0) scale(0.96);
 }
 
 .avatar-wrap {
@@ -471,14 +479,22 @@ page {
   padding: 8rpx 0 20rpx;
 }
 
+.chat-bottom-anchor {
+  width: 100%;
+  height: 2rpx;
+}
+
 .message {
   display: flex;
   gap: 18rpx;
   margin-bottom: 26rpx;
+  transform-origin: 0 50%;
+  animation: messageSpring 360ms cubic-bezier(0.18, 1.25, 0.32, 1) both;
 }
 
 .message.mine {
   flex-direction: row-reverse;
+  transform-origin: 100% 50%;
 }
 
 .message-avatar {
@@ -532,11 +548,12 @@ page {
   background: rgba(226, 178, 99, 0.1);
   border: 1rpx solid rgba(226, 178, 99, 0.14);
   border-radius: 999rpx;
-  transition: all 0.25s ease;
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), background-color 160ms ease;
 }
 
 .meta-like:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
+  animation: tapElastic 260ms cubic-bezier(0.2, 0.95, 0.35, 1);
 }
 
 .bubble,
@@ -544,6 +561,7 @@ page {
   position: relative;
   max-width: 520rpx;
   overflow: hidden;
+  transform: translateZ(0);
   background: rgba(255, 255, 255, 0.078);
   border: 1rpx solid rgba(255, 255, 255, 0.09);
   border-radius: 22rpx 22rpx 22rpx 8rpx;
@@ -645,6 +663,7 @@ page {
   background:
     radial-gradient(circle at 50% 42%, rgba(255, 23, 68, 0.2), transparent 34%),
     linear-gradient(135deg, rgba(255, 23, 68, 0.14), rgba(8, 11, 16, 0.92) 58%, rgba(226, 178, 99, 0.12));
+  animation: flashFadeIn 300ms ease both;
 }
 
 .flash-expired::before {
@@ -692,6 +711,8 @@ page {
   border-bottom: 0;
   border-radius: 26rpx 26rpx 0 0;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.08), 0 -20rpx 70rpx rgba(0, 0, 0, 0.42), 0 0 40rpx rgba(91, 212, 199, 0.08);
+  transform: translateZ(0);
+  animation: composerSpring 460ms cubic-bezier(0.18, 1.18, 0.28, 1) both;
 }
 
 .composer-row {
@@ -712,6 +733,7 @@ page {
   background: rgba(255, 255, 255, 0.07);
   border: 1rpx solid rgba(255, 255, 255, 0.1);
   border-radius: 20rpx;
+  animation: panelPop 300ms cubic-bezier(0.18, 1.15, 0.32, 1) both;
 }
 
 .voice-review {
@@ -809,7 +831,7 @@ page {
   font-weight: 900;
   background: linear-gradient(135deg, #f3d999, #e2b263);
   border-radius: 999rpx;
-  transition: all 0.25s ease;
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .composer-tool {
@@ -857,7 +879,8 @@ page {
 .gender-tab:active,
 .avatar-picker:active,
 .profile-submit:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
+  animation: tapElastic 260ms cubic-bezier(0.2, 0.95, 0.35, 1);
 }
 
 .composer-options,
@@ -883,7 +906,7 @@ page {
   background: rgba(255, 255, 255, 0.075);
   border: 1rpx solid rgba(255, 255, 255, 0.08);
   border-radius: 999rpx;
-  transition: all 0.25s ease;
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), background-color 160ms ease, border-color 160ms ease;
 }
 
 .flash-toggle {
@@ -942,6 +965,7 @@ page {
   padding: 34rpx;
   box-sizing: border-box;
   background: radial-gradient(circle at 50% 100%, rgba(226, 178, 99, 0.14), transparent 40%), rgba(2, 3, 6, 0.78);
+  animation: maskFadeIn 180ms ease both;
 }
 
 .profile-panel {
@@ -955,6 +979,8 @@ page {
   border: 1rpx solid rgba(255, 255, 255, 0.12);
   border-radius: 26rpx;
   box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.1), 0 34rpx 120rpx rgba(0, 0, 0, 0.58), 0 0 48rpx rgba(226, 178, 99, 0.12);
+  transform-origin: 50% 100%;
+  animation: sheetSpring 520ms cubic-bezier(0.16, 1.18, 0.28, 1) both;
 }
 
 .profile-panel::before {
@@ -992,28 +1018,34 @@ page {
 }
 
 .avatar-picker {
+  flex: 0 0 138rpx;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 138rpx;
   height: 138rpx;
   min-height: 0;
+  max-width: 138rpx;
+  max-height: 138rpx;
   margin: 30rpx 0 0;
   padding: 0;
+  overflow: hidden;
   color: rgba(255, 248, 237, 0.78);
   font-size: 24rpx;
   font-weight: 800;
+  line-height: 138rpx;
   background: radial-gradient(circle at 50% 30%, rgba(226, 178, 99, 0.2), rgba(255, 255, 255, 0.07));
   border: 1rpx solid rgba(226, 178, 99, 0.25);
-  border-radius: 50%;
+  border-radius: 999rpx;
   box-shadow: 0 0 34rpx rgba(226, 178, 99, 0.14);
-  transition: all 0.25s ease;
+  transform: translateZ(0);
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), box-shadow 160ms ease;
 }
 
 .picked-avatar {
-  width: 138rpx;
-  height: 138rpx;
-  border-radius: 50%;
+  width: 100%;
+  height: 100%;
+  border-radius: 999rpx;
 }
 
 .gender-tabs {
@@ -1036,7 +1068,8 @@ page {
   box-shadow: 0 0 34rpx rgba(226, 178, 99, 0.26);
 }
 
-.loading-state {
+.loading-state,
+.empty-state {
   position: fixed;
   top: 0;
   right: 0;
@@ -1086,13 +1119,13 @@ page {
 
 @keyframes breatheGlow {
   0%, 100% {
-    opacity: 0.28;
-    transform: scale(0.94);
+    opacity: 0.24;
+    transform: translateZ(0) scale(0.96);
   }
 
   50% {
-    opacity: 0.5;
-    transform: scale(1.08);
+    opacity: 0.42;
+    transform: translateZ(0) scale(1.05);
   }
 }
 
@@ -1115,5 +1148,121 @@ page {
   45% {
     transform: scaleY(1.08);
     opacity: 1;
+  }
+}
+
+@keyframes contentRise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18rpx, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes messageSpring {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18rpx, 0) scale(0.985);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translate3d(0, -3rpx, 0) scale(1.006);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes composerSpring {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 36rpx, 0) scale(0.985);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translate3d(0, -5rpx, 0) scale(1.004);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes sheetSpring {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 70rpx, 0) scale(0.965);
+  }
+
+  64% {
+    opacity: 1;
+    transform: translate3d(0, -10rpx, 0) scale(1.01);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes panelPop {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 12rpx, 0) scale(0.97);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translate3d(0, -3rpx, 0) scale(1.006);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes tapElastic {
+  0% {
+    transform: scale(0.94);
+  }
+
+  70% {
+    transform: scale(1.025);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes maskFadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes flashFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }

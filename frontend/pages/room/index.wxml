@@ -12,7 +12,7 @@
   </block>
 
   <block wx:elif="{{room}}">
-    <scroll-view class="room-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <scroll-view class="room-scroll" scroll-y enhanced show-scrollbar="{{false}}" scroll-into-view="{{chatScrollTarget}}" scroll-with-animation>
       <view class="hero">
         <view class="hero-topline">
           <text class="venue-chip">{{room.statusText}}</text>
@@ -116,7 +116,7 @@
                 <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill"></image>
                 <view wx:else class="photo-placeholder">照片暂不可见</view>
                 <view class="photo-actions" wx:if="{{item.isFlash || item.text}}">
-                  <text>{{item.isFlash ? item.flashRemainingSeconds + ' 秒后自动销毁' : item.text}}</text>
+                  <text>{{item.isFlash ? item.flashCountdownText : item.text}}</text>
                 </view>
               </view>
 
@@ -127,6 +127,7 @@
           </view>
         </view>
       </view>
+      <view id="chat-bottom" class="chat-bottom-anchor"></view>
     </scroll-view>
 
     <view class="composer safe-bottom" wx:if="{{profileReady}}">
@@ -181,10 +182,10 @@
         <text class="profile-kicker">首次进入</text>
         <text class="profile-title">完善头像和昵称</text>
         <text class="profile-copy">进入主局后，局头和同桌成员会看到你的资料。</text>
-        <button class="avatar-picker" bindtap="onPickAvatar">
+        <view class="avatar-picker" bindtap="onPickAvatar">
           <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
           <text wx:else>选头像</text>
-        </button>
+        </view>
         <input class="profile-input" type="nickname" value="{{profileForm.nickName}}" bindinput="onNickNameInput" placeholder="输入昵称" placeholder-class="input-placeholder" />
         <view class="gender-tabs">
           <button
@@ -197,6 +198,13 @@
         </view>
         <button class="profile-submit" bindtap="onSaveProfile">进入主局</button>
       </view>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="empty-state">
+      <view class="loader"></view>
+      <text>主局暂时没有数据</text>
     </view>
   </block>
 </view>
