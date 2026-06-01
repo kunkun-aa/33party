@@ -255,11 +255,6 @@ Page({
       this.markVoicePlaying("");
       wx.showToast({ title: "语音暂不可播放", icon: "none" });
     });
-    try {
-      this.speechPlugin = requirePlugin("WechatSI");
-    } catch (error) {
-      this.speechPlugin = null;
-    }
   },
 
   openMap() {
@@ -599,38 +594,6 @@ Page({
       playing: message.id === id
     }));
     this.setData({ "room.messages": messages });
-  },
-
-  async transcribeVoice(event) {
-    const id = event.currentTarget.dataset.id;
-    const message = this.findMessageById(id);
-    if (!message) {
-      return;
-    }
-    if (message.transcribing) {
-      return;
-    }
-    this.updateMessage(id, { transcribing: true });
-    try {
-      const result = await api.transcribeMessage(id);
-      if (result.message) {
-        this.updateMessage(id, {
-          ...result.message,
-          transcribing: false
-        });
-        return;
-      }
-      this.updateMessage(id, {
-        transcribing: false,
-        transcript: result.transcript || "未识别到文字"
-      });
-    } catch (error) {
-      console.warn("语音转文字失败", error);
-      this.updateMessage(id, {
-        transcribing: false,
-        transcript: "语音转文字服务暂不可用"
-      });
-    }
   },
 
   updateMessage(id, patch) {

@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT,
   media_url TEXT,
   duration_seconds INTEGER,
-  transcript TEXT,
   quote_message_id TEXT,
   quote_sender TEXT,
   quote_kind TEXT,
