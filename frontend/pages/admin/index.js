@@ -144,6 +144,14 @@ Page({
       barAddress: '深圳市南山区后海中心路 33 Party Lounge'
     },
     creatingParty: false,
+    reports: [],
+    reportFilter: 'pending',
+    reportLoading: false,
+    reportFilters: [
+      { key: 'pending', label: '待处理' },
+      { key: 'resolved', label: '已处理' },
+      { key: 'rejected', label: '已驳回' }
+    ],
     memberActionSheetShow: false,
     memberActionSheetTitle: '',
     memberActionSheetActions: [],
@@ -245,6 +253,7 @@ Page({
         selectedTable: dashboard.tables[0] || null
       })
       this.recalculate(dashboard.tables)
+      this.loadReports()
     } catch (error) {
       this.recalculate(this.data.tables)
         wx.showToast({ title: '后端暂不可用，显示本地数据', icon: 'none' })
@@ -391,13 +400,15 @@ Page({
 
   openMemberActions(event) {
     const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
-    const { memberId, name, seatStatus, isHead } = dataset
+    const { memberId, userId, name, seatStatus, isHead, banned } = dataset
     const isCurrentHead = isHead === true || isHead === 'true'
+    const isBanned = banned === true || banned === 'true'
     const itemList = []
     if (seatStatus !== 'seated') {
       itemList.push('设为占位')
     }
     itemList.push(isCurrentHead ? '取消局头' : '设为局头')
+    itemList.push(isBanned ? '解除封禁' : '封禁用户')
     itemList.push('移除成员')
     wx.showActionSheet({
       itemList,
@@ -413,6 +424,14 @@ Page({
         }
         if (actionName === '取消局头') {
           this.clearTableHead()
+          return
+        }
+        if (actionName === '封禁用户') {
+          this.banMember(userId, name)
+          return
+        }
+        if (actionName === '解除封禁') {
+          this.unbanMember(userId, name)
           return
         }
         if (actionName === '移除成员') {
@@ -511,6 +530,107 @@ Page({
         }
       }
     })
+  },
+
+  setReportFilter(event) {
+    const dataset = event.currentTarget.dataset || {}
+    const filter = dataset.filter || 'pending'
+    this.setData({ reportFilter: filter })
+    this.loadReports(filter)
+  },
+
+  async loadReports(status = this.data.reportFilter) {
+    if (!this.data.partyId) {
+      return
+    }
+    this.setData({ reportLoading: true })
+    try {
+      const reports = await api.getAdminReports(this.data.partyId, status, this.data.adminId, this.data.adminKey)
+      this.setData({ reports })
+    } catch (error) {
+      console.warn('举报列表加载失败', error)
+    } finally {
+      this.setData({ reportLoading: false })
+    }
+  },
+
+  async deleteReportMessage(event) {
+    const { messageId } = event.currentTarget.dataset
+    if (!messageId) {
+      return
+    }
+    try {
+      await api.deleteMessage(messageId, '违规内容', this.data.adminId, this.data.adminKey)
+      wx.showToast({ title: '消息已删除', icon: 'success' })
+      this.loadDashboard()
+    } catch (error) {
+      wx.showToast({ title: error.message || '删除失败', icon: 'none' })
+    }
+  },
+
+  async resolveReport(event) {
+    const { reportId, status } = event.currentTarget.dataset
+    try {
+      await api.resolveReport(reportId, status, this.data.adminId, this.data.adminKey)
+      wx.showToast({ title: status === 'resolved' ? '已处理' : '已驳回', icon: 'success' })
+      this.loadReports()
+    } catch (error) {
+      wx.showToast({ title: error.message || '处理失败', icon: 'none' })
+    }
+  },
+
+  async banReportUser(event) {
+    const { userId, name } = event.currentTarget.dataset
+    this.banMember(userId, name)
+  },
+
+  async unbanReportUser(event) {
+    const { userId, name } = event.currentTarget.dataset
+    this.unbanMember(userId, name)
+  },
+
+  kickReportMember(event) {
+    const { memberId, name } = event.currentTarget.dataset
+    this.kickMember({ currentTarget: { dataset: { memberId, name } } })
+  },
+
+  banMember(userId, name = '') {
+    if (!userId) {
+      return
+    }
+    wx.showModal({
+      title: `封禁 ${name || '用户'}`,
+      content: '封禁后该账号不能重新入局或继续发消息。',
+      confirmText: '封禁',
+      confirmColor: '#d93025',
+      success: async (res) => {
+        if (!res.confirm) {
+          return
+        }
+        try {
+          await api.banUser(userId, '违规使用', this.data.partyId, this.data.adminId, this.data.adminKey)
+          this.updateMemberBanState(userId, true, '违规使用')
+          wx.showToast({ title: '已封禁', icon: 'success' })
+          this.loadReports()
+        } catch (error) {
+          wx.showToast({ title: error.message || '封禁失败', icon: 'none' })
+        }
+      }
+    })
+  },
+
+  async unbanMember(userId, name = '') {
+    if (!userId) {
+      return
+    }
+    try {
+      await api.unbanUser(userId, this.data.partyId, this.data.adminId, this.data.adminKey)
+      this.updateMemberBanState(userId, false, '')
+      wx.showToast({ title: name ? `已解除 ${name}` : '已解除封禁', icon: 'success' })
+      this.loadReports()
+    } catch (error) {
+      wx.showToast({ title: error.message || '解除失败', icon: 'none' })
+    }
   },
 
   showJoinInfo() {
@@ -648,6 +768,26 @@ Page({
         statusText: memberCount >= table.capacity ? '人数已满' : '人数未满'
       }
     })
+    this.setData({ tables })
+    this.updateSelected(this.data.selectedId)
+    this.recalculate(tables)
+  },
+
+  updateMemberBanState(userId, banned, reason = '') {
+    const tables = this.data.tables.map((table) => ({
+      ...table,
+      members: table.members.map((member) => {
+        if (member.id !== userId) {
+          return member
+        }
+        return {
+          ...member,
+          banned,
+          bannedAt: banned ? (member.bannedAt || new Date().toISOString()) : '',
+          banReason: banned ? reason : ''
+        }
+      })
+    }))
     this.setData({ tables })
     this.updateSelected(this.data.selectedId)
     this.recalculate(tables)

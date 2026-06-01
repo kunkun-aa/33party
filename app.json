@@ -1,7 +1,8 @@
 {
   "pages": [
     "frontend/pages/room/index",
-    "frontend/pages/admin/index"
+    "frontend/pages/admin/index",
+    "frontend/pages/legal/index"
   ],
   "window": {
     "navigationBarTitleText": "33 Party",

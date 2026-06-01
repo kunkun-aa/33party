@@ -93,6 +93,72 @@
     </view>
   </view>
 
+  <view class="reports-panel">
+    <view class="reports-head">
+      <view>
+        <text class="muted">投诉举报</text>
+        <text class="ops-title">举报处理</text>
+      </view>
+      <text class="report-count" wx:if="{{reportLoading}}">加载中</text>
+      <text class="report-count" wx:else>{{reports.length}} 条</text>
+    </view>
+    <view class="report-tabs">
+      <view
+        wx:for="{{reportFilters}}"
+        wx:key="key"
+        class="report-tab {{reportFilter === item.key ? 'active' : ''}}"
+        data-filter="{{item.key}}"
+        bindtap="setReportFilter"
+      >{{item.label}}</view>
+    </view>
+    <view class="report-list" wx:if="{{reports.length}}">
+      <view class="report-card" wx:for="{{reports}}" wx:key="id">
+        <view class="report-top">
+          <view>
+            <text class="report-reason">{{item.reason}}</text>
+            <text class="report-meta">{{item.tableNo}} · {{item.createdText}}</text>
+          </view>
+          <text class="report-status {{item.status}}">{{item.status === 'pending' ? '待处理' : item.status === 'resolved' ? '已处理' : '已驳回'}}</text>
+        </view>
+        <text class="report-line">举报人：{{item.reporterName}}</text>
+        <text class="report-line">对象：{{item.targetType === 'message' ? '消息' : '用户'}} {{item.targetUserName || item.targetUserId}}</text>
+        <text class="report-message" wx:if="{{item.targetMessage}}">{{item.targetMessage.text}}</text>
+        <view class="report-actions">
+          <button
+            wx:if="{{item.targetType === 'message' && item.targetMessage && !item.targetMessage.isDeleted}}"
+            class="mini-action"
+            data-message-id="{{item.targetId}}"
+            bindtap="deleteReportMessage"
+          >删消息</button>
+          <button
+            wx:if="{{item.targetUserId && !item.targetUserBannedAt}}"
+            class="mini-action danger"
+            data-user-id="{{item.targetUserId}}"
+            data-name="{{item.targetUserName}}"
+            bindtap="banReportUser"
+          >封禁</button>
+          <button
+            wx:if="{{item.targetUserId && item.targetUserBannedAt}}"
+            class="mini-action"
+            data-user-id="{{item.targetUserId}}"
+            data-name="{{item.targetUserName}}"
+            bindtap="unbanReportUser"
+          >解封</button>
+          <button
+            wx:if="{{item.targetMemberId}}"
+            class="mini-action"
+            data-member-id="{{item.targetMemberId}}"
+            data-name="{{item.targetUserName}}"
+            bindtap="kickReportMember"
+          >移除成员</button>
+          <button wx:if="{{item.status === 'pending'}}" class="mini-action" data-report-id="{{item.id}}" data-status="resolved" bindtap="resolveReport">已处理</button>
+          <button wx:if="{{item.status === 'pending'}}" class="mini-action muted-action" data-report-id="{{item.id}}" data-status="rejected" bindtap="resolveReport">驳回</button>
+        </view>
+      </view>
+    </view>
+    <view class="report-empty" wx:else>{{reportLoading ? '正在加载举报记录' : '暂无该状态举报'}}</view>
+  </view>
+
   <view class="content-grid">
     <view class="table-list">
       <block wx:for="{{visibleTables}}" wx:key="id">
@@ -209,6 +275,7 @@
               <view class="member-meta">
                 <text class="member-name">{{member.name}}</text>
                 <text class="member-role">{{member.role}} · {{member.online ? '在线' : '离线'}} · {{member.seatStatusText || '未占位'}}</text>
+                <text class="ban-tag" wx:if="{{member.bannedAt}}">已封禁</text>
                 <text class="member-wechat">微信：{{member.wechatId}}</text>
               </view>
             </view>
@@ -226,9 +293,11 @@
                 custom-class="more-action"
                 custom-style="width: 96rpx; height: 42rpx; padding: 0; color: rgba(235, 242, 247, 0.9); font-size: 18rpx; font-weight: 900; line-height: 42rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;"
                 data-member-id="{{member.memberId}}"
+                data-user-id="{{member.id}}"
                 data-name="{{member.name}}"
                 data-seat-status="{{member.seatStatus}}"
                 data-is-head="{{selectedTable.headMemberId === member.memberId}}"
+                data-banned="{{member.bannedAt ? 'true' : 'false'}}"
                 bind:click="openMemberActions"
               >
                 管理

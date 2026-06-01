@@ -1,0 +1,19 @@
+<view class="legal-page">
+  <view class="status-bar"></view>
+  <view class="legal-nav">
+    <view class="back-button" bindtap="goBack">‹</view>
+    <text>{{title}}</text>
+  </view>
+  <scroll-view class="legal-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+    <view class="legal-content">
+      <text class="legal-title">{{title}}</text>
+      <text class="legal-updated">更新日期：2026-06-01</text>
+      <block wx:for="{{sections}}" wx:key="heading">
+        <view class="legal-section">
+          <text class="section-title">{{item.heading}}</text>
+          <text class="section-text" wx:for="{{item.paragraphs}}" wx:for-item="paragraph" wx:key="*this">{{paragraph}}</text>
+        </view>
+      </block>
+    </view>
+  </scroll-view>
+</view>

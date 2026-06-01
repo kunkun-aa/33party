@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS users (
   phone TEXT,
   wechat_id TEXT,
   profile_complete INTEGER NOT NULL DEFAULT 0,
+  agreement_accepted_at TEXT,
+  age_confirmed_at TEXT,
+  banned_at TEXT,
+  ban_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
@@ -88,6 +92,9 @@ CREATE TABLE IF NOT EXISTS messages (
   like_count INTEGER NOT NULL DEFAULT 0,
   is_flash INTEGER NOT NULL DEFAULT 0,
   flash_expires_at TEXT,
+  deleted_at TEXT,
+  deleted_by TEXT,
+  delete_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
@@ -116,6 +123,23 @@ CREATE TABLE IF NOT EXISTS message_subscriptions (
   UNIQUE(party_id, table_id, user_id, template_id)
 );
 
+CREATE TABLE IF NOT EXISTS reports (
+  id TEXT PRIMARY KEY,
+  party_id TEXT NOT NULL REFERENCES parties(id),
+  table_id TEXT NOT NULL REFERENCES party_tables(id),
+  reporter_type TEXT NOT NULL CHECK(reporter_type IN ('user', 'admin')),
+  reporter_id TEXT NOT NULL,
+  target_type TEXT NOT NULL CHECK(target_type IN ('message', 'user')),
+  target_id TEXT NOT NULL,
+  target_user_id TEXT,
+  reason TEXT NOT NULL,
+  detail TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved', 'rejected')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+  handled_at TEXT,
+  handled_by TEXT
+);
+
 CREATE TABLE IF NOT EXISTS admin_sessions (
   token TEXT PRIMARY KEY,
   admin_id TEXT NOT NULL REFERENCES admins(id),
@@ -131,4 +155,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(party_id, table_id, id)
 CREATE INDEX IF NOT EXISTS idx_contact_requests_party ON contact_requests(party_id);
 CREATE INDEX IF NOT EXISTS idx_message_subscriptions_room ON message_subscriptions(party_id, table_id);
 CREATE INDEX IF NOT EXISTS idx_message_subscriptions_user ON message_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_reports_party ON reports(party_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin ON admin_sessions(admin_id);

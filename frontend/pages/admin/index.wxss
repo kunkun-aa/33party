@@ -299,6 +299,171 @@ page {
   margin-bottom: 18rpx;
 }
 
+.reports-panel {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 18rpx;
+  padding: 20rpx;
+  background: rgba(18, 22, 32, 0.76);
+  border: 1rpx solid rgba(255, 255, 255, 0.08);
+  border-radius: 20rpx;
+  box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.05), 0 18rpx 50rpx rgba(0, 0, 0, 0.26);
+}
+
+.reports-head,
+.report-top,
+.report-actions,
+.report-tabs {
+  display: flex;
+  align-items: center;
+}
+
+.reports-head,
+.report-top {
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.report-count {
+  color: #d7fb52;
+  font-size: 22rpx;
+  font-weight: 900;
+}
+
+.report-tabs {
+  gap: 10rpx;
+  margin-top: 16rpx;
+}
+
+.report-tab {
+  flex: 1;
+  height: 54rpx;
+  color: rgba(235, 242, 247, 0.82);
+  font-size: 21rpx;
+  font-weight: 900;
+  line-height: 54rpx;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1rpx solid rgba(255, 255, 255, 0.1);
+  border-radius: 999rpx;
+}
+
+.report-tab.active {
+  color: #08100b;
+  background: linear-gradient(135deg, #e8ff82, #d7fb52);
+}
+
+.report-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14rpx;
+  margin-top: 16rpx;
+}
+
+.report-card {
+  padding: 16rpx;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1rpx solid rgba(255, 255, 255, 0.09);
+  border-radius: 18rpx;
+}
+
+.report-reason,
+.report-meta,
+.report-line,
+.report-message,
+.report-empty {
+  display: block;
+}
+
+.report-reason {
+  color: #ffffff;
+  font-size: 25rpx;
+  font-weight: 900;
+}
+
+.report-meta,
+.report-line {
+  margin-top: 6rpx;
+  color: rgba(235, 242, 247, 0.7);
+  font-size: 21rpx;
+}
+
+.report-status {
+  flex: 0 0 auto;
+  padding: 7rpx 14rpx;
+  color: #08100b;
+  font-size: 19rpx;
+  font-weight: 900;
+  background: #d7fb52;
+  border-radius: 999rpx;
+}
+
+.report-status.resolved {
+  color: #06211d;
+  background: #5bd4c7;
+}
+
+.report-status.rejected {
+  color: rgba(235, 242, 247, 0.82);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.report-message {
+  margin-top: 10rpx;
+  padding: 12rpx;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 22rpx;
+  line-height: 1.45;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 14rpx;
+}
+
+.report-actions {
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 14rpx;
+}
+
+.mini-action {
+  height: 44rpx;
+  min-height: 0;
+  margin: 0;
+  padding: 0 18rpx;
+  color: #d7fb52;
+  font-size: 19rpx;
+  font-weight: 900;
+  line-height: 44rpx;
+  background: rgba(215, 251, 82, 0.1);
+  border: 1rpx solid rgba(215, 251, 82, 0.32);
+  border-radius: 999rpx;
+}
+
+.mini-action::after {
+  border: 0;
+}
+
+.mini-action.danger {
+  color: #ffb4a8;
+  background: rgba(255, 94, 79, 0.1);
+  border-color: rgba(255, 94, 79, 0.32);
+}
+
+.mini-action.muted-action {
+  color: rgba(235, 242, 247, 0.82);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.report-empty {
+  margin-top: 16rpx;
+  padding: 20rpx;
+  color: rgba(235, 242, 247, 0.58);
+  font-size: 22rpx;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 16rpx;
+}
+
 .ops-card {
   padding: 20rpx;
   background: rgba(18, 22, 32, 0.76);
@@ -756,6 +921,17 @@ page {
   font-size: 21rpx;
   font-weight: 700;
   word-break: break-all;
+}
+
+.ban-tag {
+  display: inline-block;
+  margin-top: 6rpx;
+  padding: 4rpx 10rpx;
+  color: #ffb4a8;
+  font-size: 18rpx;
+  font-weight: 900;
+  background: rgba(255, 94, 79, 0.12);
+  border-radius: 999rpx;
 }
 
 .contact-actions {

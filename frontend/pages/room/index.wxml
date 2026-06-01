@@ -38,6 +38,13 @@
           </view>
           <text class="room-notify-state">{{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}</text>
         </view>
+        <view class="legal-strip">
+          <text data-type="terms" bindtap="openLegal">用户协议</text>
+          <text>/</text>
+          <text data-type="privacy" bindtap="openLegal">隐私政策</text>
+          <text>/</text>
+          <text data-type="community" bindtap="openLegal">社区规范</text>
+        </view>
       </view>
 
       <view class="info-band">
@@ -71,7 +78,7 @@
           <text class="section-meta">{{room.members.length}} 人在线候场</text>
         </view>
         <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
-          <view class="member-card" wx:for="{{room.members}}" wx:key="id">
+          <view class="member-card" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
             <view class="avatar-wrap" data-url="{{item.avatar}}" bindtap="previewAvatar">
               <image class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
@@ -224,6 +231,16 @@
           <button class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bindtap="requestMessageSubscription">
             {{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}
           </button>
+        </view>
+        <view class="agreement-row" bindtap="toggleAgreement">
+          <text class="agreement-check">{{profileForm.agreementAccepted && profileForm.ageConfirmed ? '✓' : ''}}</text>
+          <view class="agreement-copy">
+            <text>我已阅读并同意</text>
+            <text class="legal-link" data-type="terms" catchtap="openLegal">《用户协议》</text>
+            <text class="legal-link" data-type="privacy" catchtap="openLegal">《隐私政策》</text>
+            <text class="legal-link" data-type="community" catchtap="openLegal">《社区规范》</text>
+            <text>，并确认本人已满 18 周岁</text>
+          </view>
         </view>
         <button class="profile-submit" bindtap="onSaveProfile">进入主局</button>
       </view>

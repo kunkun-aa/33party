@@ -32,7 +32,7 @@ function request(path, options = {}) {
           resolve(res.data);
           return;
         }
-        reject(new Error(`Request failed: ${res.statusCode}`));
+        reject(new Error((res.data && res.data.error) || `Request failed: ${res.statusCode}`));
       },
       fail: reject
     });
@@ -153,7 +153,13 @@ function normalizeProfile(profile = {}) {
     id: profile.id,
     nickName: profile.nickName || profile.nickname || "新朋友",
     avatarUrl: profile.avatarUrl || profile.avatar_url || "",
-    gender: profile.gender || "unknown"
+    gender: profile.gender || "unknown",
+    agreementAcceptedAt: profile.agreementAcceptedAt || profile.agreement_accepted_at || "",
+    ageConfirmedAt: profile.ageConfirmedAt || profile.age_confirmed_at || "",
+    agreementAccepted: !!(profile.agreementAccepted || profile.agreementAcceptedAt || profile.agreement_accepted_at),
+    ageConfirmed: !!(profile.ageConfirmed || profile.ageConfirmedAt || profile.age_confirmed_at),
+    bannedAt: profile.bannedAt || profile.banned_at || "",
+    banReason: profile.banReason || profile.ban_reason || ""
   };
 }
 
@@ -206,6 +212,7 @@ function formatBeijingDateTime(value) {
 function normalizeMessage(message = {}) {
   const sender = message.sender || {};
   const quote = message.quote || message.quotedMessage || null;
+  const isDeleted = !!(message.isDeleted || message.deleted_at);
   const senderId = sender.id || message.senderId || message.sender_id || "";
   const currentUserId = app.globalData.userProfile && app.globalData.userProfile.id;
   const createdAt = parseApiDate(message.createdAt) || new Date();
@@ -220,20 +227,20 @@ function normalizeMessage(message = {}) {
 
   return {
     id: message.id,
-    type: message.kind || message.type || "text",
+    type: isDeleted ? "text" : (message.kind || message.type || "text"),
     senderId,
     senderType: message.senderType || message.sender_type || "user",
     sender: sender.displayName || sender.nickname || message.sender || "系统",
     avatar: sender.avatarUrl || message.avatar || "",
     time: message.time || formatBeijingTime(createdAt),
-    text: message.text,
-    image: message.mediaUrl || message.image,
-    video: message.mediaUrl || message.video || "",
+    text: isDeleted ? "该消息已被管理员删除" : message.text,
+    image: isDeleted ? "" : (message.mediaUrl || message.image),
+    video: isDeleted ? "" : (message.mediaUrl || message.video || ""),
     duration: message.duration || (message.durationSeconds ? `${message.durationSeconds}''` : "06''"),
     durationSeconds: message.durationSeconds || message.duration_seconds || 6,
     voicePath: message.voicePath || message.mediaUrl || "",
     playing: false,
-    quote: quote && quote.id ? {
+    quote: !isDeleted && quote && quote.id ? {
       id: quote.id,
       sender: quote.sender || "对方",
       type: quote.type || quote.kind || "text",
@@ -248,7 +255,39 @@ function normalizeMessage(message = {}) {
     flashRemainingSeconds,
     flashExpiresAt,
     flashExpired: !!((message.isFlash || message.is_flash) && flashExpiresDate && flashExpiresDate.getTime() <= Date.now()),
+    isDeleted,
+    deletedAt: message.deletedAt || message.deleted_at || "",
+    deleteReason: message.deleteReason || message.delete_reason || "",
     isMine: !!(message.isMine || (currentUserId && senderId && currentUserId === senderId))
+  };
+}
+
+function normalizeReport(report = {}) {
+  const targetMessage = report.targetMessage ? normalizeMessage(report.targetMessage) : null;
+  const targetUser = report.targetUser || {};
+  const reporter = report.reporter || {};
+  return {
+    id: report.id,
+    partyId: report.partyId || report.party_id,
+    tableId: report.tableId || report.table_id,
+    tableNo: report.tableNo || report.table_no || "",
+    reporterType: report.reporterType || report.reporter_type,
+    reporterId: report.reporterId || report.reporter_id,
+    reporterName: reporter.nickname || reporter.displayName || report.reporterId || report.reporter_id || "",
+    targetType: report.targetType || report.target_type,
+    targetId: report.targetId || report.target_id,
+    targetUserId: report.targetUserId || report.target_user_id || (targetUser && targetUser.id) || "",
+    targetMemberId: report.targetMemberId || report.target_member_id || "",
+    targetUserName: targetUser.nickname || targetUser.name || "",
+    targetUserBannedAt: targetUser.bannedAt || targetUser.banned_at || "",
+    targetMessage,
+    reason: report.reason || "",
+    detail: report.detail || "",
+    status: report.status || "pending",
+    createdAt: report.createdAt || report.created_at || "",
+    createdText: formatBeijingDateTime(report.createdAt || report.created_at),
+    handledAt: report.handledAt || report.handled_at || "",
+    handledBy: report.handledBy || report.handled_by || ""
   };
 }
 
@@ -317,7 +356,9 @@ function normalizeRoom(payload = {}) {
       seatStatus: member.seatStatus || "ghost",
       seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
       online: member.online !== false,
-      avatar: member.avatarUrl || member.avatar || ""
+      avatar: member.avatarUrl || member.avatar || "",
+      bannedAt: member.bannedAt || "",
+      banReason: member.banReason || ""
     })),
     messages: (room.messages || []).map(normalizeMessage).filter((message) => !message.flashExpired)
   };
@@ -359,7 +400,10 @@ function normalizeAdminTable(table = {}, party = {}) {
       seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
       avatar: (member.nickname || member.name || "?").slice(0, 1),
       online: member.online !== false,
-      wechatId: member.wechatId || ""
+      wechatId: member.wechatId || "",
+      bannedAt: member.bannedAt || "",
+      banReason: member.banReason || "",
+      banned: !!member.bannedAt
     }))
   };
 }
@@ -567,9 +611,21 @@ function updateUserProfile(profile) {
       nickname: profile.nickName || profile.nickname,
       avatarUrl: profile.avatarUrl,
       gender: profile.gender || "unknown",
-      wechatId: profile.wechatId
+      wechatId: profile.wechatId,
+      agreementAccepted: !!profile.agreementAccepted,
+      ageConfirmed: !!profile.ageConfirmed
     }
   }).then((res) => normalizeProfile(res.user));
+}
+
+function submitReport(report) {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ ok: true, report: normalizeReport({ ...report, id: `local_report_${Date.now()}` }) });
+  }
+  return request("/api/reports", {
+    method: "POST",
+    data: report
+  }).then((res) => normalizeReport(res.report));
 }
 
 function saveMessageSubscription(room, userId, status = "accepted", templateId = "") {
@@ -696,6 +752,81 @@ function kickMember(memberId, adminKey = "") {
   });
 }
 
+function getAdminReports(partyId = "party_demo", status = "pending", adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve([]);
+  }
+  return request("/api/admin/reports", {
+    data: {
+      partyId,
+      status,
+      adminId
+    },
+    header: adminHeader(adminKey)
+  }).then((res) => (res.reports || []).map(normalizeReport));
+}
+
+function resolveReport(reportId, status = "resolved", adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ ok: true, reportId, status });
+  }
+  return request("/api/admin/reports/resolve", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      reportId,
+      status,
+      adminId
+    }
+  }).then((res) => normalizeReport(res.report));
+}
+
+function deleteMessage(messageId, reason = "违规内容", adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ ok: true, messageId });
+  }
+  return request("/api/admin/messages/delete", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      messageId,
+      reason,
+      adminId
+    }
+  }).then((res) => normalizeMessage(res.message));
+}
+
+function banUser(userId, reason = "违规使用", partyId = "party_demo", adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve(normalizeProfile({ id: userId, bannedAt: new Date().toISOString(), banReason: reason }));
+  }
+  return request("/api/admin/users/ban", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      userId,
+      reason,
+      partyId,
+      adminId
+    }
+  }).then((res) => normalizeProfile(res.user));
+}
+
+function unbanUser(userId, partyId = "party_demo", adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve(normalizeProfile({ id: userId }));
+  }
+  return request("/api/admin/users/unban", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      userId,
+      partyId,
+      adminId
+    }
+  }).then((res) => normalizeProfile(res.user));
+}
+
 function recordManagerWechatAction(roomId, managerId) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({
@@ -729,6 +860,7 @@ module.exports = {
   setTableHead,
   joinParty,
   updateUserProfile,
+  submitReport,
   saveMessageSubscription,
   sendRoomMessage,
   uploadMedia,
@@ -736,5 +868,10 @@ module.exports = {
   connectRoomSocket,
   setMemberSeat,
   kickMember,
+  getAdminReports,
+  resolveReport,
+  deleteMessage,
+  banUser,
+  unbanUser,
   recordManagerWechatAction
 };

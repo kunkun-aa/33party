@@ -13,7 +13,9 @@ Page({
     profileForm: {
       avatarUrl: "",
       nickName: "",
-      gender: "unknown"
+      gender: "unknown",
+      agreementAccepted: false,
+      ageConfirmed: false
     },
     notifyReady: false,
     notifyEnabled: false,
@@ -24,6 +26,7 @@ Page({
       { key: "male", label: "男" },
       { key: "unknown", label: "保密" }
     ],
+    reportReasons: ["骚扰辱骂", "色情低俗", "诈骗引流", "广告刷屏", "侵犯隐私", "其他"],
     inputText: "",
     sending: false,
     flashEnabled: false,
@@ -73,10 +76,25 @@ Page({
 
   loadProfile() {
     const profile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile");
-    if (profile && profile.nickName && profile.avatarUrl) {
+    const accepted = !!(profile && (profile.agreementAccepted || profile.agreementAcceptedAt));
+    const ageConfirmed = !!(profile && (profile.ageConfirmed || profile.ageConfirmedAt));
+    if (profile && profile.nickName && profile.avatarUrl && accepted && ageConfirmed) {
       this.setData({
         profileReady: true,
-        profileForm: profile
+        profileForm: {
+          ...profile,
+          agreementAccepted: true,
+          ageConfirmed: true
+        }
+      });
+    } else if (profile) {
+      this.setData({
+        profileForm: {
+          ...this.data.profileForm,
+          ...profile,
+          agreementAccepted: accepted,
+          ageConfirmed
+        }
       });
     }
   },
@@ -128,7 +146,9 @@ Page({
               profileForm: {
                 ...this.data.profileForm,
                 ...(loginRes.user || {}),
-                openid: loginRes.openid
+                openid: loginRes.openid,
+                agreementAccepted: !!(loginRes.user && loginRes.user.agreementAcceptedAt),
+                ageConfirmed: !!(loginRes.user && loginRes.user.ageConfirmedAt)
               }
             });
             resolve(loginRes.openid || "");
@@ -215,6 +235,19 @@ Page({
     });
   },
 
+  toggleAgreement() {
+    const checked = !(this.data.profileForm.agreementAccepted && this.data.profileForm.ageConfirmed);
+    this.setData({
+      "profileForm.agreementAccepted": checked,
+      "profileForm.ageConfirmed": checked
+    });
+  },
+
+  openLegal(event) {
+    const type = event.currentTarget.dataset.type || "terms";
+    wx.navigateTo({ url: `/frontend/pages/legal/index?type=${type}` });
+  },
+
   async onSaveProfile() {
     const { profileForm } = this.data;
     if (!profileForm.avatarUrl || !profileForm.nickName.trim()) {
@@ -224,26 +257,42 @@ Page({
       });
       return;
     }
-
-    const openid = await this.ensureOpenid();
-    const profile = await api.updateUserProfile({
-      ...profileForm,
-      openid: profileForm.openid || openid,
-      nickName: profileForm.nickName.trim(),
-      gender: profileForm.gender || "unknown"
-    });
-    app.saveUserProfile(profile);
-    let joinedRoom = null;
-    if (this.data.room && profile.id) {
-      joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, profile.id);
+    if (!profileForm.agreementAccepted || !profileForm.ageConfirmed) {
+      wx.showToast({
+        title: "请先同意协议并确认已满 18 周岁",
+        icon: "none"
+      });
+      return;
     }
-    this.setData({
-      profileReady: true,
-      profileForm: profile,
-      room: joinedRoom || this.data.room
-    });
-    this.scrollChatToBottom();
-    this.requestMessageSubscription();
+
+    try {
+      const openid = await this.ensureOpenid();
+      const profile = await api.updateUserProfile({
+        ...profileForm,
+        openid: profileForm.openid || openid,
+        nickName: profileForm.nickName.trim(),
+        gender: profileForm.gender || "unknown",
+        agreementAccepted: true,
+        ageConfirmed: true
+      });
+      app.saveUserProfile(profile);
+      let joinedRoom = null;
+      if (this.data.room && profile.id) {
+        joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, profile.id);
+      }
+      this.setData({
+        profileReady: true,
+        profileForm: profile,
+        room: joinedRoom || this.data.room
+      });
+      this.scrollChatToBottom();
+      this.requestMessageSubscription();
+    } catch (error) {
+      wx.showToast({
+        title: error.message || "进入失败",
+        icon: "none"
+      });
+    }
   },
 
   async ensureProfileSynced() {
@@ -259,7 +308,9 @@ Page({
       const openid = await this.ensureOpenid();
       const synced = await api.updateUserProfile({
         ...profileForm,
-        openid: profileForm.openid || openid
+        openid: profileForm.openid || openid,
+        agreementAccepted: true,
+        ageConfirmed: true
       });
       const nextProfile = {
         ...profileForm,
@@ -548,8 +599,67 @@ Page({
     if (!message) {
       return;
     }
-    this.setData({ quotedMessage: this.buildQuoteFromMessage(message) });
-    wx.showToast({ title: "已引用消息", icon: "none" });
+    wx.showActionSheet({
+      itemList: ["引用", "举报"],
+      success: (res) => {
+        if (res.tapIndex === 0) {
+          this.setData({ quotedMessage: this.buildQuoteFromMessage(message) });
+          wx.showToast({ title: "已引用消息", icon: "none" });
+          return;
+        }
+        this.chooseReportReason({
+          targetType: "message",
+          targetId: message.id,
+          targetUserId: message.senderId
+        });
+      }
+    });
+  },
+
+  onReportMember(event) {
+    const userId = event.currentTarget.dataset.userId;
+    if (!userId || userId === (this.data.profileForm && this.data.profileForm.id)) {
+      return;
+    }
+    this.chooseReportReason({
+      targetType: "user",
+      targetId: userId,
+      targetUserId: userId
+    });
+  },
+
+  chooseReportReason(target) {
+    if (!this.data.profileReady || !this.data.profileForm.id) {
+      wx.showToast({ title: "请先完善资料", icon: "none" });
+      return;
+    }
+    wx.showActionSheet({
+      itemList: this.data.reportReasons,
+      success: (res) => {
+        const reason = this.data.reportReasons[res.tapIndex];
+        this.submitReport(target, reason);
+      }
+    });
+  },
+
+  async submitReport(target, reason) {
+    const room = this.data.room || {};
+    try {
+      await api.submitReport({
+        partyId: room.partyId,
+        tableId: room.tableId,
+        reporterType: "user",
+        reporterId: this.data.profileForm.id,
+        targetType: target.targetType,
+        targetId: target.targetId,
+        targetUserId: target.targetUserId,
+        reason
+      });
+      wx.showToast({ title: "举报已提交", icon: "none" });
+    } catch (error) {
+      console.warn("举报提交失败", error);
+      wx.showToast({ title: error.message || "举报提交失败", icon: "none" });
+    }
   },
 
   clearQuote() {

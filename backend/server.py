@@ -53,6 +53,10 @@ ONLINE_WINDOW_SECONDS = int(os.environ.get("ONLINE_WINDOW_SECONDS", "300"))
 CLEANUP_STATE = {"last_run": 0}
 CLEANUP_LOCK = threading.Lock()
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+REPORT_REASONS = {"骚扰辱骂", "色情低俗", "诈骗引流", "广告刷屏", "侵犯隐私", "其他"}
+REPORT_STATUSES = {"pending", "resolved", "rejected"}
+USER_RESTRICTED_MESSAGE = "账号已被限制使用"
+AGREEMENT_REQUIRED_MESSAGE = "请先同意用户协议并确认已满 18 周岁"
 
 
 def room_channel_key(party_id: str, table_id: str) -> str:
@@ -308,6 +312,10 @@ def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, def
 def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "admins", "openid", "TEXT")
     add_column_if_missing(conn, "users", "gender", "TEXT NOT NULL DEFAULT 'unknown'")
+    add_column_if_missing(conn, "users", "agreement_accepted_at", "TEXT")
+    add_column_if_missing(conn, "users", "age_confirmed_at", "TEXT")
+    add_column_if_missing(conn, "users", "banned_at", "TEXT")
+    add_column_if_missing(conn, "users", "ban_reason", "TEXT")
     add_column_if_missing(conn, "party_members", "seat_status", "TEXT NOT NULL DEFAULT 'ghost'")
     add_column_if_missing(conn, "party_tables", "head_member_id", "TEXT REFERENCES party_members(id) ON DELETE SET NULL")
     add_column_if_missing(conn, "messages", "like_count", "INTEGER NOT NULL DEFAULT 0")
@@ -319,9 +327,17 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "messages", "quote_text", "TEXT")
     add_column_if_missing(conn, "messages", "quote_media_url", "TEXT")
     add_column_if_missing(conn, "messages", "quote_duration_seconds", "INTEGER")
+    add_column_if_missing(conn, "messages", "deleted_at", "TEXT")
+    add_column_if_missing(conn, "messages", "deleted_by", "TEXT")
+    add_column_if_missing(conn, "messages", "delete_reason", "TEXT")
     migrate_messages_video_kind(conn)
+    add_column_if_missing(conn, "messages", "deleted_at", "TEXT")
+    add_column_if_missing(conn, "messages", "deleted_by", "TEXT")
+    add_column_if_missing(conn, "messages", "delete_reason", "TEXT")
     conn.execute("UPDATE users SET gender = 'female' WHERE id = 'user_demo_1' AND gender = 'unknown'")
     conn.execute("UPDATE users SET gender = 'male' WHERE id = 'user_demo_2' AND gender = 'unknown'")
+    conn.execute("UPDATE users SET agreement_accepted_at = COALESCE(agreement_accepted_at, datetime('now', '+8 hours')) WHERE id LIKE 'user_demo_%'")
+    conn.execute("UPDATE users SET age_confirmed_at = COALESCE(age_confirmed_at, datetime('now', '+8 hours')) WHERE id LIKE 'user_demo_%'")
     conn.execute("UPDATE party_members SET seat_status = 'seated' WHERE id = 'member_demo_1'")
     conn.execute("UPDATE messages SET kind = 'photo' WHERE kind = 'photo_burst'")
     conn.execute("UPDATE messages SET text = REPLACE(text, '爆照一下，', '') WHERE text LIKE '%爆照一下%'")
@@ -345,6 +361,28 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_message_subscriptions_room ON message_subscriptions(party_id, table_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_message_subscriptions_user ON message_subscriptions(user_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reports (
+          id TEXT PRIMARY KEY,
+          party_id TEXT NOT NULL REFERENCES parties(id),
+          table_id TEXT NOT NULL REFERENCES party_tables(id),
+          reporter_type TEXT NOT NULL CHECK(reporter_type IN ('user', 'admin')),
+          reporter_id TEXT NOT NULL,
+          target_type TEXT NOT NULL CHECK(target_type IN ('message', 'user')),
+          target_id TEXT NOT NULL,
+          target_user_id TEXT,
+          reason TEXT NOT NULL,
+          detail TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'resolved', 'rejected')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+          handled_at TEXT,
+          handled_by TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_party ON reports(party_id, status, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id)")
 
 
 def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
@@ -557,6 +595,8 @@ def seed_db(conn: sqlite3.Connection) -> None:
             "female",
             "luna_33",
             1,
+            "2026-01-01 20:00:00",
+            "2026-01-01 20:00:00",
         ),
         (
             "user_demo_2",
@@ -566,12 +606,16 @@ def seed_db(conn: sqlite3.Connection) -> None:
             "male",
             "kai_live",
             1,
+            "2026-01-01 20:00:00",
+            "2026-01-01 20:00:00",
         ),
     ]
     conn.executemany(
         """
-        INSERT INTO users (id, openid, nickname, avatar_url, gender, wechat_id, profile_complete)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users
+          (id, openid, nickname, avatar_url, gender, wechat_id, profile_complete,
+           agreement_accepted_at, age_confirmed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         users,
     )
@@ -770,6 +814,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.like_message(body), status=201)
             elif method == "POST" and path == "/api/messages/subscribe":
                 self.respond(self.save_message_subscription(body), status=201)
+            elif method == "POST" and path == "/api/reports":
+                self.respond(self.create_report(body), status=201)
             elif method == "POST" and path == "/api/uploads":
                 self.respond(self.upload_media(body), status=201)
             elif method == "POST" and path == "/api/photo-burst":
@@ -790,6 +836,16 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.set_table_head(body))
             elif method == "POST" and path == "/api/admin/members/kick":
                 self.respond(self.kick_member(body))
+            elif method == "GET" and path == "/api/admin/reports":
+                self.respond(self.get_admin_reports(query))
+            elif method == "POST" and path == "/api/admin/reports/resolve":
+                self.respond(self.resolve_report(body))
+            elif method == "POST" and path == "/api/admin/messages/delete":
+                self.respond(self.delete_message(body))
+            elif method == "POST" and path == "/api/admin/users/ban":
+                self.respond(self.ban_user(body))
+            elif method == "POST" and path == "/api/admin/users/unban":
+                self.respond(self.unban_user(body))
             elif method == "POST" and path == "/api/admin/cleanup":
                 self.respond(self.cleanup_content(body))
             elif method == "POST" and path == "/api/contact/request":
@@ -976,27 +1032,61 @@ class PartyHandler(BaseHTTPRequestHandler):
         gender = body.get("gender") or "unknown"
         phone = body.get("phone")
         profile_complete = 1 if nickname and avatar_url else 0
+        agreement_requested = bool(body.get("agreementAccepted"))
+        age_requested = bool(body.get("ageConfirmed"))
 
         with connect() as conn:
-            existing = conn.execute("SELECT id FROM users WHERE openid = ?", (openid,)).fetchone()
+            existing = conn.execute("SELECT * FROM users WHERE openid = ?", (openid,)).fetchone()
+            agreement_accepted_at = existing["agreement_accepted_at"] if existing else None
+            age_confirmed_at = existing["age_confirmed_at"] if existing else None
+            if agreement_requested and not agreement_accepted_at:
+                agreement_accepted_at = conn.execute("SELECT datetime('now', '+8 hours') AS now").fetchone()["now"]
+            if age_requested and not age_confirmed_at:
+                age_confirmed_at = conn.execute("SELECT datetime('now', '+8 hours') AS now").fetchone()["now"]
+            if not agreement_accepted_at or not age_confirmed_at:
+                raise ApiError(400, AGREEMENT_REQUIRED_MESSAGE)
             if existing:
                 user_id = existing["id"]
                 conn.execute(
                     """
                     UPDATE users
                     SET nickname = ?, avatar_url = ?, gender = ?, phone = ?, wechat_id = ?,
-                        profile_complete = ?, updated_at = datetime('now', '+8 hours')
+                        profile_complete = ?, agreement_accepted_at = ?, age_confirmed_at = ?,
+                        updated_at = datetime('now', '+8 hours')
                     WHERE id = ?
                     """,
-                    (nickname, avatar_url, gender, phone, wechat_id, profile_complete, user_id),
+                    (
+                        nickname,
+                        avatar_url,
+                        gender,
+                        phone,
+                        wechat_id,
+                        profile_complete,
+                        agreement_accepted_at,
+                        age_confirmed_at,
+                        user_id,
+                    ),
                 )
             else:
                 conn.execute(
                     """
-                    INSERT INTO users (id, openid, nickname, avatar_url, gender, phone, wechat_id, profile_complete)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO users
+                      (id, openid, nickname, avatar_url, gender, phone, wechat_id, profile_complete,
+                       agreement_accepted_at, age_confirmed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (user_id, openid, nickname, avatar_url, gender, phone, wechat_id, profile_complete),
+                    (
+                        user_id,
+                        openid,
+                        nickname,
+                        avatar_url,
+                        gender,
+                        phone,
+                        wechat_id,
+                        profile_complete,
+                        agreement_accepted_at,
+                        age_confirmed_at,
+                    ),
                 )
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return {"ok": True, "user": public_user(user)}
@@ -1013,6 +1103,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 raise ApiError(404, "用户不存在，请先完善资料")
+            self.ensure_user_can_use(user)
             if not table_id:
                 table = conn.execute(
                     "SELECT id FROM party_tables WHERE party_id = ? ORDER BY table_no LIMIT 1",
@@ -1098,6 +1189,8 @@ class PartyHandler(BaseHTTPRequestHandler):
         with connect() as conn:
             self.ensure_sender(conn, sender_type, sender_id)
             if sender_type == "user":
+                user = conn.execute("SELECT * FROM users WHERE id = ?", (sender_id,)).fetchone()
+                self.ensure_user_can_use(user)
                 self.touch_member(conn, party_id, table_id, sender_id)
             msg_id = new_id("msg")
             conn.execute(
@@ -1307,6 +1400,232 @@ class PartyHandler(BaseHTTPRequestHandler):
         body["kind"] = "photo"
         body["text"] = body.get("text") or "照片"
         return self.create_message(body)
+
+    def create_report(self, body: dict) -> dict:
+        party_id = require(body, "partyId")
+        table_id = require(body, "tableId")
+        reporter_type = body.get("reporterType", "user")
+        reporter_id = require(body, "reporterId")
+        target_type = require(body, "targetType")
+        target_id = require(body, "targetId")
+        reason = require(body, "reason")
+        detail = (body.get("detail") or "").strip()
+        if reporter_type not in {"user", "admin"}:
+            raise ApiError(400, "举报人类型必须是 user 或 admin")
+        if target_type not in {"message", "user"}:
+            raise ApiError(400, "举报对象必须是 message 或 user")
+        if reason not in REPORT_REASONS:
+            raise ApiError(400, "举报原因不支持")
+
+        with connect() as conn:
+            table = conn.execute(
+                "SELECT id FROM party_tables WHERE id = ? AND party_id = ?",
+                (table_id, party_id),
+            ).fetchone()
+            if not table:
+                raise ApiError(404, "桌台不存在")
+            self.ensure_sender(conn, reporter_type, reporter_id)
+            if reporter_type == "user":
+                reporter = conn.execute("SELECT * FROM users WHERE id = ?", (reporter_id,)).fetchone()
+                self.ensure_user_can_use(reporter)
+            target_user_id = None
+            if target_type == "message":
+                message = conn.execute(
+                    "SELECT * FROM messages WHERE id = ? AND party_id = ? AND table_id = ?",
+                    (target_id, party_id, table_id),
+                ).fetchone()
+                if not message:
+                    raise ApiError(404, "消息不存在")
+                target_user_id = message["sender_id"] if message["sender_type"] == "user" else None
+            else:
+                user = conn.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
+                if not user:
+                    raise ApiError(404, "被举报用户不存在")
+                target_user_id = user["id"]
+            report_id = new_id("report")
+            conn.execute(
+                """
+                INSERT INTO reports
+                  (id, party_id, table_id, reporter_type, reporter_id, target_type,
+                   target_id, target_user_id, reason, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report_id,
+                    party_id,
+                    table_id,
+                    reporter_type,
+                    reporter_id,
+                    target_type,
+                    target_id,
+                    target_user_id,
+                    reason,
+                    detail,
+                ),
+            )
+            row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+            return {"ok": True, "report": self.decorate_report(conn, row)}
+
+    def get_admin_reports(self, query: dict) -> dict:
+        self.require_admin_request(query)
+        party_id = require(query, "partyId")
+        admin_id = query.get("adminId", "admin_mimei")
+        status = query.get("status", "pending")
+        if status not in REPORT_STATUSES:
+            raise ApiError(400, "举报状态不支持")
+        with connect() as conn:
+            self.ensure_admin_party(conn, party_id, admin_id)
+            rows = conn.execute(
+                """
+                SELECT * FROM reports
+                WHERE party_id = ? AND status = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 100
+                """,
+                (party_id, status),
+            ).fetchall()
+            return {"ok": True, "reports": [self.decorate_report(conn, row) for row in rows]}
+
+    def resolve_report(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        report_id = require(body, "reportId")
+        status = require(body, "status")
+        admin_id = body.get("adminId", "admin_mimei")
+        if status not in {"resolved", "rejected"}:
+            raise ApiError(400, "处理状态必须是 resolved 或 rejected")
+        with connect() as conn:
+            report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+            if not report:
+                raise ApiError(404, "举报不存在")
+            self.ensure_admin_party(conn, report["party_id"], admin_id)
+            conn.execute(
+                """
+                UPDATE reports
+                SET status = ?, handled_at = datetime('now', '+8 hours'), handled_by = ?
+                WHERE id = ?
+                """,
+                (status, admin_id, report_id),
+            )
+            updated = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+            return {"ok": True, "report": self.decorate_report(conn, updated)}
+
+    def delete_message(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        message_id = require(body, "messageId")
+        admin_id = body.get("adminId", "admin_mimei")
+        reason = (body.get("reason") or "违规内容").strip() or "违规内容"
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            if not row:
+                raise ApiError(404, "消息不存在")
+            self.ensure_admin_party(conn, row["party_id"], admin_id)
+            conn.execute(
+                """
+                UPDATE messages
+                SET deleted_at = COALESCE(deleted_at, datetime('now', '+8 hours')),
+                    deleted_by = ?,
+                    delete_reason = ?
+                WHERE id = ?
+                """,
+                (admin_id, reason, message_id),
+            )
+            updated = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            message = self.decorate_message(conn, updated)
+        ROOM_WS_HUB.broadcast(room_channel_key(message["partyId"], message["tableId"]), {
+            "type": "message.updated",
+            "partyId": message["partyId"],
+            "tableId": message["tableId"],
+            "message": message,
+        })
+        return {"ok": True, "message": message}
+
+    def ban_user(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        user_id = require(body, "userId")
+        admin_id = body.get("adminId", "admin_mimei")
+        party_id = body.get("partyId")
+        reason = (body.get("reason") or "违规使用").strip() or "违规使用"
+        with connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                raise ApiError(404, "用户不存在")
+            if party_id:
+                self.ensure_admin_party(conn, party_id, admin_id)
+            else:
+                self.ensure_admin_exists(conn, admin_id)
+            conn.execute(
+                """
+                UPDATE users
+                SET banned_at = COALESCE(banned_at, datetime('now', '+8 hours')),
+                    ban_reason = ?,
+                    updated_at = datetime('now', '+8 hours')
+                WHERE id = ?
+                """,
+                (reason, user_id),
+            )
+            updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return {"ok": True, "user": public_user(updated, expose_wechat=True)}
+
+    def unban_user(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        user_id = require(body, "userId")
+        admin_id = body.get("adminId", "admin_mimei")
+        party_id = body.get("partyId")
+        with connect() as conn:
+            user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                raise ApiError(404, "用户不存在")
+            if party_id:
+                self.ensure_admin_party(conn, party_id, admin_id)
+            else:
+                self.ensure_admin_exists(conn, admin_id)
+            conn.execute(
+                """
+                UPDATE users
+                SET banned_at = NULL, ban_reason = NULL, updated_at = datetime('now', '+8 hours')
+                WHERE id = ?
+                """,
+                (user_id,),
+            )
+            updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return {"ok": True, "user": public_user(updated, expose_wechat=True)}
+
+    def decorate_report(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+        data = row_to_dict(row)
+        data["partyId"] = data.pop("party_id")
+        data["tableId"] = data.pop("table_id")
+        data["reporterType"] = data.pop("reporter_type")
+        data["reporterId"] = data.pop("reporter_id")
+        data["targetType"] = data.pop("target_type")
+        data["targetId"] = data.pop("target_id")
+        data["targetUserId"] = data.pop("target_user_id")
+        data["createdAt"] = data.pop("created_at")
+        data["handledAt"] = data.pop("handled_at")
+        data["handledBy"] = data.pop("handled_by")
+        table = conn.execute("SELECT table_no FROM party_tables WHERE id = ?", (data["tableId"],)).fetchone()
+        data["tableNo"] = table["table_no"] if table else ""
+        try:
+            data["reporter"] = self.load_contact_target(conn, data["reporterType"], data["reporterId"], expose_private=False)
+        except ApiError:
+            data["reporter"] = None
+        data["targetUser"] = None
+        data["targetMemberId"] = None
+        if data["targetUserId"]:
+            target = conn.execute("SELECT * FROM users WHERE id = ?", (data["targetUserId"],)).fetchone()
+            data["targetUser"] = public_user(target, expose_wechat=True) if target else None
+            member = conn.execute(
+                """
+                SELECT id FROM party_members
+                WHERE party_id = ? AND table_id = ? AND user_id = ?
+                """,
+                (data["partyId"], data["tableId"], data["targetUserId"]),
+            ).fetchone()
+            data["targetMemberId"] = member["id"] if member else None
+        data["targetMessage"] = None
+        if data["targetType"] == "message":
+            message = conn.execute("SELECT * FROM messages WHERE id = ?", (data["targetId"],)).fetchone()
+            data["targetMessage"] = self.decorate_message(conn, message) if message else None
+        return data
 
     def cleanup_content(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -1686,6 +2005,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         if not row:
             return None
         sender = self.load_message_sender(conn, row)
+        is_deleted = bool(row["deleted_at"] if "deleted_at" in row.keys() else None)
         return {
             "id": row["id"],
             "partyId": row["party_id"],
@@ -1693,20 +2013,24 @@ class PartyHandler(BaseHTTPRequestHandler):
             "senderType": row["sender_type"],
             "sender": sender,
             "kind": row["kind"],
-            "text": row["text"],
-            "mediaUrl": row["media_url"],
-            "durationSeconds": row["duration_seconds"],
-            "quote": {
+            "text": "该消息已被管理员删除" if is_deleted else row["text"],
+            "mediaUrl": None if is_deleted else row["media_url"],
+            "durationSeconds": None if is_deleted else row["duration_seconds"],
+            "quote": None if is_deleted else ({
                 "id": row["quote_message_id"],
                 "sender": row["quote_sender"],
                 "type": row["quote_kind"],
                 "text": row["quote_text"],
                 "mediaUrl": row["quote_media_url"],
                 "durationSeconds": row["quote_duration_seconds"],
-            } if row["quote_message_id"] else None,
+            } if row["quote_message_id"] else None),
             "likeCount": row["like_count"],
             "isFlash": bool(row["is_flash"]),
             "flashExpiresAt": row["flash_expires_at"],
+            "isDeleted": is_deleted,
+            "deletedAt": row["deleted_at"] if "deleted_at" in row.keys() else None,
+            "deletedBy": row["deleted_by"] if "deleted_by" in row.keys() else None,
+            "deleteReason": row["delete_reason"] if "delete_reason" in row.keys() else None,
             "createdAt": row["created_at"],
         }
 
@@ -1739,6 +2063,14 @@ class PartyHandler(BaseHTTPRequestHandler):
         if not row:
             raise ApiError(404, "联系人不存在")
 
+    def ensure_user_can_use(self, user: sqlite3.Row | None) -> None:
+        if not user:
+            raise ApiError(404, "用户不存在")
+        if user["banned_at"]:
+            raise ApiError(403, USER_RESTRICTED_MESSAGE)
+        if not user["agreement_accepted_at"] or not user["age_confirmed_at"]:
+            raise ApiError(403, AGREEMENT_REQUIRED_MESSAGE)
+
     def touch_member(self, conn: sqlite3.Connection, party_id: str, table_id: str, user_id: str) -> None:
         conn.execute(
             """
@@ -1765,6 +2097,17 @@ class PartyHandler(BaseHTTPRequestHandler):
         if not user:
             raise ApiError(404, "用户不存在")
         return public_user(user, expose_wechat=expose_private)
+
+    def ensure_admin_exists(self, conn: sqlite3.Connection, admin_id: str) -> None:
+        admin = conn.execute("SELECT id FROM admins WHERE id = ?", (admin_id,)).fetchone()
+        if not admin:
+            raise ApiError(404, "管理员不存在")
+
+    def ensure_admin_party(self, conn: sqlite3.Connection, party_id: str, admin_id: str) -> dict:
+        party = self.load_party(conn, party_id)
+        if not party or party["admin"]["id"] != admin_id:
+            raise ApiError(403, "无管理员权限")
+        return party
 
     def require_admin_request(self, data: dict) -> None:
         token = self.headers.get("X-Admin-Token") or data.get("adminToken") or ""
@@ -1820,6 +2163,10 @@ def public_user(row: sqlite3.Row, expose_wechat: bool = False) -> dict:
         "seatStatus": row["seat_status"] if "seat_status" in row.keys() else "ghost",
         "lastSeenAt": last_seen_at,
         "online": is_recently_seen(last_seen_at),
+        "agreementAcceptedAt": row["agreement_accepted_at"] if "agreement_accepted_at" in row.keys() else None,
+        "ageConfirmedAt": row["age_confirmed_at"] if "age_confirmed_at" in row.keys() else None,
+        "bannedAt": row["banned_at"] if "banned_at" in row.keys() else None,
+        "banReason": row["ban_reason"] if "ban_reason" in row.keys() else None,
     }
     if expose_wechat:
         data["wechatId"] = row["wechat_id"]

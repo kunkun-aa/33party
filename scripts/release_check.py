@@ -26,6 +26,7 @@ def check_static_files() -> None:
         "app.json",
         "frontend/pages/room/index.json",
         "frontend/pages/admin/index.json",
+        "frontend/pages/legal/index.json",
         "package.json",
     ]:
         json.loads((ROOT / path).read_text(encoding="utf-8"))
@@ -36,7 +37,10 @@ def check_static_files() -> None:
     config_js = (ROOT / "config.js").read_text(encoding="utf-8")
     assert_true("wx.requestSubscribeMessage" in room_js, "room page should request subscribe message permission")
     assert_true("connectRoomSocket" in room_js, "room page should connect websocket")
+    assert_true("agreementAccepted" in room_js and "submitReport" in room_js, "room page should require agreement and support reports")
     assert_true("/api/messages/subscribe" in api_js, "api service should save message subscriptions")
+    assert_true("/api/reports" in api_js, "api service should submit reports")
+    assert_true("/api/admin/users/ban" in api_js, "api service should expose admin ban API")
     assert_true("/api/users/login" in api_js, "api service should support user login")
     assert_true("/ws/room" in api_js, "api service should build room websocket url")
     assert_true("messageTemplateId" in app_js and "messageTemplateId" in config_js, "app config should carry message template id")
@@ -110,16 +114,23 @@ def post_multipart_file(
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
-def read_ws_frame(sock: socket.socket) -> tuple[int, dict]:
-    first, second = sock.recv(2)
+def read_ws_frame(sock: socket.socket, initial: bytes = b"") -> tuple[int, dict]:
+    buffer = bytearray(initial)
+
+    def take(size: int) -> bytes:
+        while len(buffer) < size:
+            buffer.extend(sock.recv(size - len(buffer)))
+        data = bytes(buffer[:size])
+        del buffer[:size]
+        return data
+
+    first, second = take(2)
     length = second & 0x7F
     if length == 126:
-        length = struct.unpack("!H", sock.recv(2))[0]
+        length = struct.unpack("!H", take(2))[0]
     elif length == 127:
-        length = struct.unpack("!Q", sock.recv(8))[0]
-    data = b""
-    while len(data) < length:
-        data += sock.recv(length - len(data))
+        length = struct.unpack("!Q", take(8))[0]
+    data = take(length)
     return first & 0x0F, json.loads(data.decode("utf-8"))
 
 
@@ -135,9 +146,11 @@ def connect_room_socket() -> socket.socket:
         "Sec-WebSocket-Version: 13\r\n\r\n"
     )
     sock.sendall(request.encode("utf-8"))
-    response = sock.recv(4096).decode("utf-8", errors="replace")
+    raw_response = sock.recv(4096)
+    headers, _, leftover = raw_response.partition(b"\r\n\r\n")
+    response = headers.decode("utf-8", errors="replace")
     assert_true("101 Switching Protocols" in response, "websocket should switch protocols")
-    _, body = read_ws_frame(sock)
+    _, body = read_ws_frame(sock, leftover)
     assert_true(body.get("type") == "connected", "websocket should emit connected event")
     return sock
 
@@ -204,7 +217,22 @@ def run() -> int:
                     "wechatId": "release_user_wechat",
                 },
             )
+            assert_true(status == 400 and body.get("ok") is False, "profile API should require agreement and age confirmation")
+
+            status, body = post_json(
+                "/api/users/profile",
+                {
+                    "openid": "release_openid_1",
+                    "nickname": "Release 用户",
+                    "avatarUrl": "https://dummyimage.com/160x160/102826/f6e7c8&text=R",
+                    "gender": "unknown",
+                    "wechatId": "release_user_wechat",
+                    "agreementAccepted": True,
+                    "ageConfirmed": True,
+                },
+            )
             assert_true(status == 201 and body.get("ok") is True, "user profile API should create user")
+            assert_true(body["user"]["agreementAcceptedAt"] and body["user"]["ageConfirmedAt"], "profile should persist agreement state")
             release_user_id = body["user"]["id"]
 
             status, body = post_json(
@@ -285,11 +313,41 @@ def run() -> int:
                     },
                 )
                 assert_true(status == 201 and body.get("ok") is True, "message API should create text message")
+                realtime_message_id = body["message"]["id"]
                 _, event = read_ws_frame(sock)
                 assert_true(event.get("type") == "message.created", "websocket should receive message.created")
                 assert_true(event["message"]["text"] == "release check realtime", "websocket message should match posted message")
             finally:
                 sock.close()
+
+            status, body = post_json(
+                "/api/reports",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "reporterType": "user",
+                    "reporterId": release_user_id,
+                    "targetType": "message",
+                    "targetId": realtime_message_id,
+                    "reason": "骚扰辱骂",
+                },
+            )
+            assert_true(status == 201 and body.get("ok") is True, "user should report a message")
+            message_report_id = body["report"]["id"]
+
+            status, body = post_json(
+                "/api/reports",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "reporterType": "user",
+                    "reporterId": release_user_id,
+                    "targetType": "user",
+                    "targetId": "user_demo_2",
+                    "reason": "诈骗引流",
+                },
+            )
+            assert_true(status == 201 and body.get("ok") is True, "user should report another user")
 
             status, body = post_json("/api/messages/like", {"messageId": user_message["id"]})
             assert_true(status == 201 and body.get("ok") is True, "message like API should work")
@@ -329,6 +387,80 @@ def run() -> int:
             assert_true(status == 200 and body.get("ok") is True, "admin API should accept valid key")
 
             admin_headers = {"X-Admin-Key": ADMIN_KEY}
+            status, body = request_json(
+                "/api/admin/reports?partyId=party_demo&adminId=admin_mimei&status=pending",
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and len(body.get("reports", [])) >= 2, "admin should list pending reports")
+
+            status, body = post_json(
+                "/api/admin/messages/delete",
+                {"adminId": "admin_mimei", "messageId": realtime_message_id, "reason": "违规内容"},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and body["message"]["isDeleted"] is True, "admin should delete message")
+
+            status, body = request_json("/api/room?partyId=party_demo&tableId=table_a01&userId=release_user_id")
+            deleted_message = next(message for message in body["room"]["messages"] if message["id"] == realtime_message_id)
+            assert_true(deleted_message["text"] == "该消息已被管理员删除", "room API should hide deleted message body")
+
+            status, body = post_json(
+                "/api/admin/users/ban",
+                {"adminId": "admin_mimei", "partyId": "party_demo", "userId": release_user_id, "reason": "违规使用"},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and body["user"]["bannedAt"], "admin should ban user")
+
+            status, body = post_json(
+                "/api/messages",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "senderType": "user",
+                    "senderId": release_user_id,
+                    "kind": "text",
+                    "text": "blocked after ban",
+                },
+            )
+            assert_true(status == 403 and body.get("error") == "账号已被限制使用", "banned user should not send messages")
+
+            status, body = post_json(
+                "/api/party/join",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "userId": release_user_id,
+                },
+            )
+            assert_true(status == 403 and body.get("error") == "账号已被限制使用", "banned user should not join")
+
+            status, body = post_json(
+                "/api/admin/users/unban",
+                {"adminId": "admin_mimei", "partyId": "party_demo", "userId": release_user_id},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and not body["user"]["bannedAt"], "admin should unban user")
+
+            status, body = post_json(
+                "/api/messages",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "senderType": "user",
+                    "senderId": release_user_id,
+                    "kind": "text",
+                    "text": "release check after unban",
+                },
+            )
+            assert_true(status == 201 and body.get("ok") is True, "unbanned user should send messages again")
+
+            status, body = post_json(
+                "/api/admin/reports/resolve",
+                {"adminId": "admin_mimei", "reportId": message_report_id, "status": "resolved"},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and body["report"]["status"] == "resolved", "admin should resolve report")
+
             status, body = request_json(
                 "/api/admin/tables/invite?tableId=table_a01&adminId=admin_mimei",
                 headers=admin_headers,
