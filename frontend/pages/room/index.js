@@ -42,6 +42,8 @@ Page({
     voiceReview: null,
     chatScrollTarget: "",
     quotedMessage: null,
+    canChat: false,
+    memberTransitionId: "",
     mediaPreview: {
       visible: false,
       url: "",
@@ -76,6 +78,10 @@ Page({
     this.closeRoomSocket();
     if (this.recordTimer) {
       clearInterval(this.recordTimer);
+    }
+    if (this.memberTransitionTimer) {
+      clearTimeout(this.memberTransitionTimer);
+      this.memberTransitionTimer = null;
     }
     if (this.recorderManager && this.data.voiceRecording) {
       this.voiceRecordCanceled = true;
@@ -184,6 +190,7 @@ Page({
       const mergedRoom = this.mergeLocalRoomMessages(room);
       this.setData({
         room: this.prepareFlashMessages(this.hydrateRoomMessageProfiles(mergedRoom)),
+        canChat: this.computeCanChat(mergedRoom, this.data.profileForm),
         loading: false
       });
       this.persistRoomMessages();
@@ -356,7 +363,8 @@ Page({
         profileReady: true,
         profileEditing: false,
         profileForm: savedProfile,
-        room: joinedRoom || this.data.room
+        room: joinedRoom || this.data.room,
+        canChat: this.computeCanChat(joinedRoom || this.data.room, savedProfile)
       });
       if (wasEditing) {
         this.applyUserProfileUpdate(savedProfile);
@@ -400,6 +408,7 @@ Page({
       };
       app.saveUserProfile(nextProfile);
       this.setData({ profileForm: nextProfile });
+      this.updateCanChat();
       return nextProfile;
     } catch (error) {
       console.warn("用户资料同步失败，继续使用本地资料", error);
@@ -465,6 +474,10 @@ Page({
     if (!text || this.data.sending || !this.data.room) {
       return;
     }
+    if (!this.canCurrentUserChat()) {
+      wx.showToast({ title: "占位后才能发言", icon: "none" });
+      return;
+    }
 
     this.setData({ sending: true });
     const profile = await this.ensureProfileSynced();
@@ -494,6 +507,10 @@ Page({
 
   onVoiceTouchStart() {
     if (!this.data.room || this.data.sending || this.data.voiceRecording) {
+      return;
+    }
+    if (!this.canCurrentUserChat()) {
+      wx.showToast({ title: "占位后才能发言", icon: "none" });
       return;
     }
     if (!this.recorderManager) {
@@ -637,6 +654,10 @@ Page({
   },
 
   onChoosePhoto() {
+    if (!this.canCurrentUserChat()) {
+      wx.showToast({ title: "占位后才能发言", icon: "none" });
+      return;
+    }
     wx.chooseMedia({
       count: 1,
       mediaType: ["image", "video"],
@@ -921,22 +942,16 @@ Page({
       return;
     }
     try {
-      await api.likeMessage(this.data.room.partyId, id);
+      const message = await api.likeMessage(this.data.room.partyId, id);
+      this.replaceMessage(message);
     } catch (error) {
-      console.warn("点赞同步失败，已本地计数", error);
+      console.warn("点赞同步失败", error);
+      wx.showToast({ title: "点赞失败，请重试", icon: "none" });
     }
-    const messages = this.data.room.messages.map((item) => {
-      if (item.id === id) {
-        return {
-          ...item,
-          likeCount: (item.likeCount || 0) + 1
-        };
-      }
-      return item;
-    });
-    this.setData({
-      "room.messages": messages
-    });
+  },
+
+  canCurrentUserChat() {
+    return this.data.canChat;
   },
 
   async onCopyManagerWechat() {
@@ -1104,6 +1119,10 @@ Page({
     }
     if (payload.type === "user.profile.updated" && payload.user) {
       this.applyUserProfileUpdate(payload.user);
+      return;
+    }
+    if (payload.type === "member.updated" && payload.member) {
+      this.applyMemberUpdate(payload.member, payload.table);
     }
   },
 
@@ -1140,7 +1159,7 @@ Page({
       };
     });
     const dataPatch = {
-      "room.members": members,
+      "room.members": this.sortMembers(members),
       "room.messages": messages
     };
     if (currentUserId && user.id === currentUserId) {
@@ -1159,8 +1178,81 @@ Page({
       app.saveUserProfile(nextProfile);
       dataPatch.profileForm = nextProfile;
     }
+    dataPatch.canChat = this.computeCanChat({
+      ...this.data.room,
+      members: dataPatch["room.members"]
+    }, dataPatch.profileForm || this.data.profileForm);
     this.setData(dataPatch);
     this.persistRoomMessages();
+  },
+
+  applyMemberUpdate(member = {}, table = null) {
+    if (!this.data.room || !member.id) {
+      return;
+    }
+    let found = false;
+    const members = (this.data.room.members || []).map((item) => {
+      if (item.id === member.id || item.memberId === member.memberId) {
+        found = true;
+        return {
+          ...item,
+          ...member
+        };
+      }
+      return item;
+    });
+    if (!found) {
+      members.push(member);
+    }
+    const sortedMembers = this.sortMembers(members);
+    const dataPatch = {
+      "room.members": sortedMembers,
+      memberTransitionId: member.id,
+      canChat: this.computeCanChat({
+        ...this.data.room,
+        members: sortedMembers
+      }, this.data.profileForm)
+    };
+    if (table && table.capacity) {
+      const memberCount = table.memberCount || 0;
+      dataPatch["room.room.capacity"] = `${memberCount}/${table.capacity} 占位`;
+      dataPatch["room.room.openSeats"] = table.openSeats;
+      dataPatch["room.room.seatStatusText"] = table.openSeats > 0 ? "人数未满" : "人数已满";
+      dataPatch["room.statusText"] = table.statusText || dataPatch["room.room.seatStatusText"];
+    }
+    this.setData(dataPatch);
+    if (this.memberTransitionTimer) {
+      clearTimeout(this.memberTransitionTimer);
+    }
+    this.memberTransitionTimer = setTimeout(() => {
+      if (this.data.memberTransitionId === member.id) {
+        this.setData({ memberTransitionId: "" });
+      }
+      this.memberTransitionTimer = null;
+    }, 900);
+  },
+
+  sortMembers(members = []) {
+    return members.slice().sort((left, right) => {
+      const leftRank = left.seatStatus === "seated" ? 0 : 1;
+      const rightRank = right.seatStatus === "seated" ? 0 : 1;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return String(left.memberId || left.id || "").localeCompare(String(right.memberId || right.id || ""));
+    });
+  },
+
+  updateCanChat() {
+    this.setData({
+      canChat: this.computeCanChat(this.data.room, this.data.profileForm)
+    });
+  },
+
+  computeCanChat(room = this.data.room, profile = this.data.profileForm) {
+    const members = room && room.members || [];
+    const member = members.find((item) => item.id === (profile && profile.id));
+    return !!(member && member.seatStatus === "seated");
   },
 
   scrollChatToBottom() {

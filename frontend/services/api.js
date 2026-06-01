@@ -179,6 +179,35 @@ function normalizeProfile(profile = {}) {
   };
 }
 
+function normalizeMember(member = {}) {
+  const name = member.nickname || member.nickName || member.name || "新朋友";
+  return {
+    id: member.id,
+    memberId: member.memberId,
+    name,
+    role: member.role || "成员",
+    gender: member.gender || "unknown",
+    seatStatus: member.seatStatus || "ghost",
+    seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
+    online: member.online !== false,
+    avatar: normalizeAvatarUrl(member.avatarUrl || member.avatar || ""),
+    avatarText: avatarInitial(name),
+    bannedAt: member.bannedAt || "",
+    banReason: member.banReason || ""
+  };
+}
+
+function sortMembers(members = []) {
+  return members.slice().sort((left, right) => {
+    const leftRank = left.seatStatus === "seated" ? 0 : 1;
+    const rightRank = right.seatStatus === "seated" ? 0 : 1;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return String(left.memberId || left.id || "").localeCompare(String(right.memberId || right.id || ""));
+  });
+}
+
 function parseApiDate(value) {
   if (!value) {
     return null;
@@ -365,23 +394,7 @@ function normalizeRoom(payload = {}) {
       openSeats,
       entryCode: table.shareScene || room.room?.entryCode || ""
     },
-    members: (room.members || []).map((member) => {
-      const name = member.nickname || member.name;
-      return {
-        id: member.id,
-        memberId: member.memberId,
-        name,
-        role: member.role || "成员",
-        gender: member.gender || "unknown",
-        seatStatus: member.seatStatus || "ghost",
-        seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
-        online: member.online !== false,
-        avatar: normalizeAvatarUrl(member.avatarUrl || member.avatar || ""),
-        avatarText: avatarInitial(name),
-        bannedAt: member.bannedAt || "",
-        banReason: member.banReason || ""
-      };
-    }),
+    members: sortMembers((room.members || []).map(normalizeMember)),
     messages: (room.messages || []).map(normalizeMessage).filter((message) => !message.flashExpired)
   };
 }
@@ -739,6 +752,9 @@ function connectRoomSocket(room, handlers = {}) {
     if (payload.type === "user.profile.updated" && payload.user) {
       payload.user = normalizeProfile(payload.user);
     }
+    if (payload.type === "member.updated" && payload.member) {
+      payload.member = normalizeMember(payload.member);
+    }
     if (handlers.onMessage) {
       handlers.onMessage(payload);
     }
@@ -758,13 +774,17 @@ function connectRoomSocket(room, handlers = {}) {
 
 function setMemberSeat(memberId, seatStatus = "seated", adminKey = "") {
   if (!app.globalData.apiBaseUrl) {
-    return Promise.resolve({ ok: true, memberId, seatStatus });
+    return Promise.resolve({ ok: true, memberId, seatStatus, member: null, table: null });
   }
   return request("/api/admin/members/seat", {
     method: "POST",
     header: adminHeader(adminKey),
     data: { memberId, seatStatus }
-  });
+  }).then((res) => ({
+    ...res,
+    member: res.member ? normalizeMember(res.member) : null,
+    table: res.table ? normalizeAdminTable(res.table, {}) : null
+  }));
 }
 
 function kickMember(memberId, adminKey = "") {

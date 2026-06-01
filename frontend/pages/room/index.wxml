@@ -78,7 +78,7 @@
           <text class="section-meta">{{room.members.length}} 人在线候场</text>
         </view>
         <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
-          <view class="member-card" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
+          <view class="member-card {{memberTransitionId === item.id ? 'status-updated' : ''}}" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
             <view class="avatar-wrap" data-url="{{item.avatar}}" data-user-id="{{item.id}}" bindtap="previewAvatar">
               <image wx:if="{{item.avatar}}" class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
               <view wx:else class="member-avatar avatar-fallback">{{item.avatarText}}</view>
@@ -184,7 +184,9 @@
         <view class="quote-close" bindtap="clearQuote">×</view>
       </view>
 
-      <view class="composer-options">
+      <view class="composer-seat-tip" wx:if="{{!canChat}}">占位请添加管理员</view>
+
+      <view class="composer-options" wx:else>
         <view class="flash-toggle {{flashEnabled ? 'active' : ''}}" bindtap="toggleFlash">
           <text class="check-box">{{flashEnabled ? '✓' : ''}}</text>
           <text>闪照</text>
@@ -194,7 +196,7 @@
           <view class="flash-second {{flashSeconds === 10 ? 'active' : ''}}" data-seconds="10" bindtap="setFlashSeconds">10s</view>
         </view>
       </view>
-      <view class="composer-row">
+      <view class="composer-row" wx:if="{{canChat}}">
         <input class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
         <view class="composer-tool voice-tool {{voiceRecording ? 'recording' : ''}}" bindlongpress="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd">语音</view>
         <view class="composer-tool photo-tool" bindtap="onChoosePhoto">照片</view>

@@ -295,9 +295,27 @@ def run() -> int:
 
             status, body = request_json("/api/room?partyId=party_demo&tableId=table_a01&userId=user_demo_1")
             assert_true(status == 200 and body.get("ok") is True, "room API should return ok")
+            member_statuses = [member["seatStatus"] for member in body["room"]["members"]]
+            assert_true(
+                member_statuses == sorted(member_statuses, key=lambda status: 0 if status == "seated" else 1),
+                "room members should list seated members first",
+            )
             messages = body["room"]["messages"]
             user_message = next(message for message in messages if message["senderType"] == "user")
             assert_true(user_message["sender"].get("memberId"), "user message sender should include memberId")
+
+            status, body = post_json(
+                "/api/messages",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "senderType": "user",
+                    "senderId": release_user_id,
+                    "kind": "text",
+                    "text": "ghost should not speak",
+                },
+            )
+            assert_true(status == 403 and body.get("ok") is False, "ghost member should not create messages")
 
             status, body = request_json("/api/config")
             assert_true(status == 200 and body.get("messageTemplateId") == "test_template_id", "config should expose subscribe template id")
@@ -413,7 +431,7 @@ def run() -> int:
 
             status, body = post_json("/api/messages/like", {"messageId": user_message["id"]})
             assert_true(status == 201 and body.get("ok") is True, "message like API should work")
-            assert_true(body["message"]["likeCount"] >= 1, "message like count should increase")
+            assert_true(body["message"]["likeCount"] == user_message["likeCount"] + 1, "message like count should increase once")
 
             status, body = post_json(
                 "/api/contact/request",
@@ -504,6 +522,15 @@ def run() -> int:
             assert_true(status == 200 and not body["user"]["bannedAt"], "admin should unban user")
 
             status, body = post_json(
+                "/api/admin/members/seat",
+                {"memberId": release_member_id, "seatStatus": "seated"},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and body.get("seatStatus") == "seated", "admin should seat unbanned member")
+            assert_true(body["member"]["seatStatus"] == "seated", "seat API should return updated member")
+            assert_true(body["table"]["members"][0]["seatStatus"] == "seated", "seat API should return refreshed table summary")
+
+            status, body = post_json(
                 "/api/messages",
                 {
                     "partyId": "party_demo",
@@ -536,6 +563,21 @@ def run() -> int:
                 headers=admin_headers,
             )
             assert_true(status == 200 and body.get("seatStatus") == "seated", "admin should seat member")
+
+            sock = connect_room_socket()
+            try:
+                status, body = post_json(
+                    "/api/admin/members/seat",
+                    {"memberId": "member_demo_2", "seatStatus": "seated"},
+                    headers=admin_headers,
+                )
+                assert_true(status == 200 and body.get("seatStatus") == "seated", "admin should seat demo member")
+                _, event = read_ws_frame(sock)
+                assert_true(event.get("type") == "member.updated", "websocket should receive member.updated")
+                assert_true(event["member"]["memberId"] == "member_demo_2", "member update should identify changed member")
+                assert_true(event["member"]["seatStatus"] == "seated", "member update should carry new seat status")
+            finally:
+                sock.close()
 
             status, body = post_json(
                 "/api/admin/tables/head",

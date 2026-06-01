@@ -1263,6 +1263,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             if sender_type == "user":
                 user = conn.execute("SELECT * FROM users WHERE id = ?", (sender_id,)).fetchone()
                 self.ensure_user_can_use(user)
+                self.ensure_user_seated(conn, party_id, table_id, sender_id)
                 self.touch_member(conn, party_id, table_id, sender_id)
             msg_id = new_id("msg")
             conn.execute(
@@ -1887,7 +1888,32 @@ class PartyHandler(BaseHTTPRequestHandler):
                 "UPDATE party_members SET seat_status = ?, last_seen_at = datetime('now', '+8 hours') WHERE id = ?",
                 (seat_status, member_id),
             )
-            return {"ok": True, "memberId": member_id, "seatStatus": seat_status}
+            updated = conn.execute(
+                """
+                SELECT u.*, m.id AS member_id, m.role, m.seat_status, m.joined_at, m.last_seen_at
+                FROM party_members m
+                JOIN users u ON u.id = m.user_id
+                WHERE m.id = ?
+                """,
+                (member_id,),
+            ).fetchone()
+            table = conn.execute("SELECT * FROM party_tables WHERE id = ?", (row["table_id"],)).fetchone()
+            member = public_user(updated, expose_wechat=False)
+            table_data = self.load_table_summary(conn, table) if table else None
+        ROOM_WS_HUB.broadcast(room_channel_key(row["party_id"], row["table_id"]), {
+            "type": "member.updated",
+            "partyId": row["party_id"],
+            "tableId": row["table_id"],
+            "member": member,
+            "table": table_data,
+        })
+        return {
+            "ok": True,
+            "memberId": member_id,
+            "seatStatus": seat_status,
+            "member": member,
+            "table": table_data,
+        }
 
     def set_table_head(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2003,7 +2029,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             FROM party_members m
             JOIN users u ON u.id = m.user_id
             WHERE m.party_id = ? AND m.table_id = ?
-            ORDER BY m.joined_at ASC
+            ORDER BY CASE WHEN m.seat_status = 'seated' THEN 0 ELSE 1 END, m.joined_at ASC
             """,
             (party_id, table_id),
         ).fetchall()
@@ -2037,7 +2063,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             FROM party_members m
             JOIN users u ON u.id = m.user_id
             WHERE m.table_id = ?
-            ORDER BY m.joined_at ASC
+            ORDER BY CASE WHEN m.seat_status = 'seated' THEN 0 ELSE 1 END, m.joined_at ASC
             """,
             (table["id"],),
         ).fetchall()
@@ -2142,6 +2168,19 @@ class PartyHandler(BaseHTTPRequestHandler):
             raise ApiError(403, USER_RESTRICTED_MESSAGE)
         if not user["agreement_accepted_at"] or not user["age_confirmed_at"]:
             raise ApiError(403, AGREEMENT_REQUIRED_MESSAGE)
+
+    def ensure_user_seated(self, conn: sqlite3.Connection, party_id: str, table_id: str, user_id: str) -> None:
+        member = conn.execute(
+            """
+            SELECT seat_status FROM party_members
+            WHERE party_id = ? AND table_id = ? AND user_id = ?
+            """,
+            (party_id, table_id, user_id),
+        ).fetchone()
+        if not member:
+            raise ApiError(403, "请先加入本桌并完成占位后再发言")
+        if member["seat_status"] != "seated":
+            raise ApiError(403, "未占位成员暂不能发言")
 
     def touch_member(self, conn: sqlite3.Connection, party_id: str, table_id: str, user_id: str) -> None:
         conn.execute(

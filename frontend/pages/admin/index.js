@@ -474,8 +474,12 @@ Page({
       return
     }
     try {
-      await api.setMemberSeat(memberId, 'seated', this.data.adminKey)
-      this.updateMemberStatus(memberId, 'seated')
+      const result = await api.setMemberSeat(memberId, 'seated', this.data.adminKey)
+      if (result.table) {
+        this.replaceTable(result.table)
+      } else {
+        this.updateMemberStatus(memberId, 'seated')
+      }
       this.setTransientCopy(`seat_${memberId}`)
     } catch (error) {
       wx.showToast({ title: '设置失败', icon: 'none' })
@@ -725,6 +729,13 @@ Page({
         statusText: memberCount >= table.capacity ? '人数已满' : '人数未满'
       }
     })
+    this.setData({ tables })
+    this.updateSelected(this.data.selectedId)
+    this.recalculate(tables)
+  },
+
+  replaceTable(nextTable) {
+    const tables = this.data.tables.map((table) => table.id === nextTable.id ? nextTable : table)
     this.setData({ tables })
     this.updateSelected(this.data.selectedId)
     this.recalculate(tables)
