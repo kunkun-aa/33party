@@ -1,0 +1,11 @@
+{
+  "navigationBarTitleText": "33 Party 管理台",
+  "navigationBarBackgroundColor": "#080B10",
+  "navigationBarTextStyle": "white",
+  "backgroundColor": "#080B10",
+  "usingComponents": {
+    "van-button": "../../vant/button/index",
+    "van-field": "../../vant/field/index",
+    "van-tag": "../../vant/tag/index"
+  }
+}

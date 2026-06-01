@@ -1,0 +1,169 @@
+<view class="room-page">
+  <view class="ambient ambient-left"></view>
+  <view class="ambient ambient-right"></view>
+
+  <view class="status-bar"></view>
+
+  <block wx:if="{{loading}}">
+    <view class="loading-state">
+      <view class="loader"></view>
+      <text>正在进入主局</text>
+    </view>
+  </block>
+
+  <block wx:elif="{{room}}">
+    <scroll-view class="room-scroll" scroll-y enhanced show-scrollbar="{{false}}">
+      <view class="hero">
+        <view class="hero-topline">
+          <text class="venue-chip">{{room.statusText}}</text>
+          <text class="live-tag">{{room.liveTag}}</text>
+        </view>
+        <view class="music-strip {{music.playing ? 'playing' : ''}}" bindtap="toggleMusic">
+          <view class="music-bars">
+            <text></text>
+            <text></text>
+            <text></text>
+          </view>
+          <text>{{music.playing ? '背景音乐播放中' : '开启台内背景音乐'}}</text>
+        </view>
+        <view class="hero-title-row">
+          <view>
+            <text class="hero-title">{{room.title}}</text>
+          </view>
+        </view>
+        <view class="manager-contact">
+          <view class="manager-contact-copy">
+            <text class="contact-label">管理员微信</text>
+            <text class="contact-value">{{room.manager.wechatId}}</text>
+            <text class="contact-hint">{{room.manager.contactHint}}</text>
+          </view>
+          <view class="contact-button" bindtap="onCopyManagerWechat">复制</view>
+        </view>
+      </view>
+
+      <view class="info-band">
+        <view class="info-block address-block">
+          <view class="address-head">
+            <view>
+              <text class="label">酒吧地址</text>
+              <text class="primary">{{room.venue.address}}</text>
+              <text class="muted">{{room.venue.distance}}</text>
+            </view>
+            <view class="map-button" bindtap="openMap">地图</view>
+          </view>
+        </view>
+        <view class="info-grid">
+          <view class="info-block">
+            <text class="label">桌 / 房</text>
+            <text class="primary">{{room.room.tableName}}</text>
+            <text class="muted">{{room.room.seatStatusText}}</text>
+          </view>
+          <view class="info-block">
+            <text class="label">入局码</text>
+            <text class="primary code">{{room.room.entryCode}}</text>
+            <text class="muted">{{room.room.capacity}}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="section">
+        <view class="section-head">
+          <text class="section-title">成员</text>
+          <text class="section-meta">{{room.members.length}} 人在线候场</text>
+        </view>
+        <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
+          <view class="member-card" wx:for="{{room.members}}" wx:key="id">
+            <view class="avatar-wrap">
+              <image class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
+              <view class="online-dot {{item.online ? 'online' : ''}}"></view>
+            </view>
+            <text class="member-name">{{item.name}}</text>
+            <text class="member-role">{{item.gender === 'male' ? '男' : item.gender === 'female' ? '女' : '保密'}} · {{item.seatStatusText}}</text>
+          </view>
+        </scroll-view>
+      </view>
+
+      <view class="section chat-section">
+        <view class="section-head">
+          <text class="section-title">房间小聊</text>
+        </view>
+        <view class="message-list">
+          <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id">
+            <image class="message-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
+            <view class="message-body">
+              <view class="message-meta">
+                <text class="message-name">{{item.sender}}</text>
+                <text class="message-time">{{item.time}}</text>
+                <text class="meta-like" data-id="{{item.id}}" bindtap="onLike">赞 {{item.likeCount || 0}}</text>
+              </view>
+
+              <view wx:if="{{item.type === 'text'}}" class="bubble text-bubble">
+                <text>{{item.text}}</text>
+              </view>
+
+              <view wx:elif="{{item.type === 'voice'}}" class="bubble voice-bubble">
+                <view class="voice-bars">
+                  <text></text>
+                  <text></text>
+                  <text></text>
+                  <text></text>
+                </view>
+                <text class="voice-copy">语音消息 {{item.duration}}</text>
+              </view>
+
+              <view wx:elif="{{item.type === 'photo'}}" class="photo-message">
+                <view wx:if="{{item.flashExpired}}" class="flash-expired">照片已销毁</view>
+                <image wx:else class="photo-shot" src="{{item.image}}" mode="aspectFill"></image>
+                <view class="photo-actions">
+                  <text>{{item.text}}</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="composer safe-bottom" wx:if="{{profileReady}}">
+      <view class="composer-options">
+        <view class="flash-toggle {{flashEnabled ? 'active' : ''}}" bindtap="toggleFlash">
+          <text class="check-box">{{flashEnabled ? '✓' : ''}}</text>
+          <text>闪照</text>
+        </view>
+        <view class="flash-options" wx:if="{{flashEnabled}}">
+          <view class="flash-second {{flashSeconds === 5 ? 'active' : ''}}" data-seconds="5" bindtap="setFlashSeconds">5s</view>
+          <view class="flash-second {{flashSeconds === 10 ? 'active' : ''}}" data-seconds="10" bindtap="setFlashSeconds">10s</view>
+        </view>
+      </view>
+      <view class="composer-row">
+        <input class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
+        <view class="composer-tool voice-tool" bindtap="onSendVoice">语音</view>
+        <view class="composer-tool photo-tool" bindtap="onChoosePhoto">照片</view>
+        <view class="composer-tool send-button" bindtap="onSendText">{{sending ? '...' : '发送'}}</view>
+      </view>
+    </view>
+
+    <view class="profile-mask" wx:if="{{!profileReady}}">
+      <view class="profile-panel">
+        <text class="profile-kicker">首次进入</text>
+        <text class="profile-title">完善头像和昵称</text>
+        <text class="profile-copy">进入主局后，局头和同桌成员会看到你的资料。</text>
+        <button class="avatar-picker" bindtap="onPickAvatar">
+          <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
+          <text wx:else>选头像</text>
+        </button>
+        <input class="profile-input" type="nickname" value="{{profileForm.nickName}}" bindinput="onNickNameInput" placeholder="输入昵称" placeholder-class="input-placeholder" />
+        <view class="gender-tabs">
+          <button
+            wx:for="{{genderOptions}}"
+            wx:key="key"
+            class="gender-tab {{profileForm.gender === item.key ? 'active' : ''}}"
+            data-gender="{{item.key}}"
+            bindtap="onGenderTap"
+          >{{item.label}}</button>
+        </view>
+        <button class="profile-submit" bindtap="onSaveProfile">进入主局</button>
+      </view>
+    </view>
+  </block>
+</view>

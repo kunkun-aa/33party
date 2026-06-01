@@ -1,0 +1,14 @@
+{
+  "pages": [
+    "frontend/pages/room/index",
+    "frontend/pages/admin/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "33 Party",
+    "navigationStyle": "custom",
+    "backgroundColor": "#0b0d12",
+    "backgroundTextStyle": "light"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

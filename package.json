@@ -1,0 +1,17 @@
+{
+  "name": "33party",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "release:check": "python scripts/release_check.py",
+    "test": "python scripts/release_check.py"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@vant/weapp": "^1.11.7"
+  }
+}

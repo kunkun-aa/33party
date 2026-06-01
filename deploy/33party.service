@@ -1,0 +1,18 @@
+[Unit]
+Description=33Party backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/33party
+EnvironmentFile=/etc/33party/backend.env
+ExecStart=/usr/bin/python3 /opt/33party/backend/server.py
+Restart=always
+RestartSec=3
+User=33party
+Group=33party
+RuntimeDirectory=33party
+StateDirectory=33party
+
+[Install]
+WantedBy=multi-user.target

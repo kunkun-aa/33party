@@ -2,7 +2,7 @@
   "libVersion": "3.16.0",
   "projectname": "33party",
   "setting": {
-    "urlCheck": true,
+    "urlCheck": false,
     "coverView": true,
     "lazyloadPlaceholderEnable": false,
     "skylineRenderEnable": false,
@@ -10,5 +10,25 @@
     "autoAudits": false,
     "showShadowRootInWxmlPanel": true,
     "compileHotReLoad": true
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "name": "frontend/pages/room/index",
+          "pathName": "frontend/pages/room/index",
+          "query": "",
+          "scene": null,
+          "launchMode": "default"
+        },
+        {
+          "name": "frontend/pages/admin/index",
+          "pathName": "frontend/pages/admin/index",
+          "query": "",
+          "launchMode": "default",
+          "scene": null
+        }
+      ]
+    }
   }
 }

@@ -1,0 +1,11 @@
+backend/party.db
+backend/__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+.env
+deploy/backend.env
+frontend_files_bundle.txt
+node_modules/
+miniprogram_npm/
