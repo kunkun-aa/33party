@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import sqlite3
 import sys
 import time
 import uuid
+import cgi
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +23,8 @@ DEFAULT_HOST = os.environ.get("HOST", "127.0.0.1")
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", ROOT / "uploads"))
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(80 * 1024 * 1024)))
 MINIPROGRAM_APPID = os.environ.get("WECHAT_MINIPROGRAM_APPID", "")
 MINIPROGRAM_SECRET = os.environ.get("WECHAT_MINIPROGRAM_SECRET", "")
 MINIPROGRAM_ENV_VERSION = os.environ.get("WECHAT_MINIPROGRAM_ENV_VERSION", "release")
@@ -348,7 +352,10 @@ class PartyHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
             query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
-            body = self.read_json_body() if method == "POST" else {}
+            if method == "GET" and path.startswith("/uploads/"):
+                self.serve_upload(path)
+                return
+            body = self.read_request_body() if method == "POST" else {}
 
             if method == "GET" and path == "/health":
                 self.respond({"ok": True, "service": "33party-backend"})
@@ -377,6 +384,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.create_message(body), status=201)
             elif method == "POST" and path == "/api/messages/like":
                 self.respond(self.like_message(body), status=201)
+            elif method == "POST" and path == "/api/uploads":
+                self.respond(self.upload_media(body), status=201)
             elif method == "POST" and path == "/api/photo-burst":
                 self.respond(self.create_photo_burst(body), status=201)
             elif method == "GET" and path == "/api/admin/tables":
@@ -404,6 +413,12 @@ class PartyHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover - keeps local dev debuggable.
             self.respond({"ok": False, "error": str(exc)}, status=500)
 
+    def read_request_body(self) -> dict:
+        content_type = self.headers.get("Content-Type", "")
+        if content_type.lower().startswith("multipart/form-data"):
+            return self.read_multipart_body()
+        return self.read_json_body()
+
     def read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
         if length == 0:
@@ -413,6 +428,36 @@ class PartyHandler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
             raise ApiError(400, f"JSON 格式错误: {exc}") from exc
+
+    def read_multipart_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise ApiError(400, "上传内容为空")
+        if length > MAX_UPLOAD_BYTES:
+            raise ApiError(413, "上传文件过大")
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                "CONTENT_LENGTH": str(length),
+            },
+        )
+        body: dict = {}
+        for key in form.keys():
+            field = form[key]
+            if isinstance(field, list):
+                field = field[0]
+            if field.filename:
+                body[key] = {
+                    "filename": field.filename,
+                    "contentType": field.type or "application/octet-stream",
+                    "data": field.file.read(),
+                }
+            else:
+                body[key] = field.value
+        return body
 
     def respond(self, data: dict, status: int = 200) -> None:
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -430,6 +475,17 @@ class PartyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def serve_upload(self, path: str) -> None:
+        relative = path.removeprefix("/uploads/").strip("/")
+        if not relative or ".." in Path(relative).parts:
+            raise ApiError(404, "文件不存在")
+        file_path = (UPLOAD_DIR / relative).resolve()
+        upload_root = UPLOAD_DIR.resolve()
+        if upload_root not in file_path.parents or not file_path.is_file():
+            raise ApiError(404, "文件不存在")
+        content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        self.respond_bytes(file_path.read_bytes(), content_type)
 
     def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -674,6 +730,45 @@ class PartyHandler(BaseHTTPRequestHandler):
             row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
             return {"ok": True, "message": self.decorate_message(conn, row)}
 
+    def upload_media(self, body: dict) -> dict:
+        file = body.get("file")
+        if not isinstance(file, dict) or not file.get("data"):
+            raise ApiError(400, "缺少上传文件")
+        media_type = body.get("mediaType") or body.get("type") or "file"
+        if media_type not in {"voice", "photo", "video", "avatar", "file"}:
+            raise ApiError(400, "不支持的上传类型")
+        data = file["data"]
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise ApiError(413, "上传文件过大")
+
+        suffix = Path(file.get("filename") or "").suffix.lower()
+        if not suffix:
+            suffix = mimetypes.guess_extension(file.get("contentType") or "") or ".bin"
+        allowed_suffixes = {
+            "voice": {".aac", ".amr", ".mp3", ".m4a", ".wav"},
+            "photo": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"},
+            "video": {".mp4", ".mov", ".m4v", ".avi"},
+            "avatar": {".jpg", ".jpeg", ".png", ".webp", ".heic"},
+            "file": {".aac", ".amr", ".mp3", ".m4a", ".wav", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4v", ".avi"},
+        }
+        if suffix not in allowed_suffixes[media_type]:
+            raise ApiError(400, "文件格式暂不支持")
+
+        target_dir = UPLOAD_DIR / media_type
+        target_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{new_id('media')}{suffix}"
+        target_path = target_dir / filename
+        target_path.write_bytes(data)
+
+        path = f"/uploads/{media_type}/{filename}"
+        return {
+            "ok": True,
+            "mediaUrl": self.absolute_url(path),
+            "path": path,
+            "contentType": file.get("contentType") or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+            "size": len(data),
+        }
+
     def like_message(self, body: dict) -> dict:
         message_id = require(body, "messageId")
         with connect() as conn:
@@ -771,6 +866,10 @@ class PartyHandler(BaseHTTPRequestHandler):
     def absolute_url(self, path: str) -> str:
         if PUBLIC_API_BASE_URL:
             return f"{PUBLIC_API_BASE_URL.rstrip('/')}{path}"
+        host = self.headers.get("Host", "")
+        if host:
+            proto = self.headers.get("X-Forwarded-Proto") or ("http" if host.startswith(("127.0.0.1", "localhost")) else "https")
+            return f"{proto}://{host}{path}"
         return path
 
     def update_admin_profile(self, body: dict) -> dict:

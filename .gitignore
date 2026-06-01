@@ -1,4 +1,5 @@
 backend/party.db
+backend/uploads/
 backend/__pycache__/
 *.pyc
 *.db

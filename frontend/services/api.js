@@ -39,6 +39,39 @@ function request(path, options = {}) {
   });
 }
 
+function isLocalFilePath(path = "") {
+  return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
+}
+
+function uploadMedia(filePath, mediaType = "file") {
+  const baseUrl = app.globalData.apiBaseUrl;
+  if (!baseUrl || !filePath || !isLocalFilePath(filePath)) {
+    return Promise.resolve({ mediaUrl: filePath });
+  }
+
+  return new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: `${baseUrl}/api/uploads`,
+      filePath,
+      name: "file",
+      formData: { mediaType },
+      success(res) {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Upload failed: ${res.statusCode}`));
+          return;
+        }
+        try {
+          const data = typeof res.data === "string" ? JSON.parse(res.data) : res.data;
+          resolve(data);
+        } catch (error) {
+          reject(error);
+        }
+      },
+      fail: reject
+    });
+  });
+}
+
 function adminHeader(adminKey = "") {
   if (!adminKey) {
     return {};
@@ -497,13 +530,16 @@ function updateUserProfile(profile) {
   }).then((res) => normalizeProfile(res.user));
 }
 
-function sendRoomMessage(roomId, tableId, message) {
+async function sendRoomMessage(roomId, tableId, message) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({
       ...message,
       id: `local_msg_${Date.now()}`
     });
   }
+  const localMediaPath = message.mediaUrl || message.image || message.video || message.voicePath;
+  const mediaUpload = await uploadMedia(localMediaPath, message.type);
+  const stableMediaUrl = mediaUpload.mediaUrl || localMediaPath;
   return request("/api/messages", {
     method: "POST",
     data: {
@@ -513,7 +549,7 @@ function sendRoomMessage(roomId, tableId, message) {
       senderId: app.globalData.userProfile && app.globalData.userProfile.id,
       kind: message.type,
       text: message.text,
-      mediaUrl: message.mediaUrl || message.image || message.video || message.voicePath,
+      mediaUrl: stableMediaUrl,
       durationSeconds: message.durationSeconds,
       quoteMessageId: message.quote && message.quote.id,
       quoteSender: message.quote && message.quote.sender,
@@ -591,6 +627,7 @@ module.exports = {
   joinParty,
   updateUserProfile,
   sendRoomMessage,
+  uploadMedia,
   likeMessage,
   setMemberSeat,
   kickMember,

@@ -5,7 +5,7 @@ const configs = {
     apiBaseUrl: "http://127.0.0.1:7893"
   },
   prod: {
-    apiBaseUrl: "http://13.212.104.243"
+    apiBaseUrl: "https://api.kunsir.ltd"
   }
 };
 
