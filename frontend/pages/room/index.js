@@ -601,42 +601,36 @@ Page({
     this.setData({ "room.messages": messages });
   },
 
-  transcribeVoice(event) {
+  async transcribeVoice(event) {
     const id = event.currentTarget.dataset.id;
     const message = this.findMessageById(id);
     if (!message) {
       return;
     }
-    const src = message.voicePath || message.image || "";
-    if (this.speechPlugin && src) {
-      this.updateMessage(id, { transcribing: true });
-      this.speechPlugin.translateVoice({
-        filePath: src,
-        lang: "zh_CN",
-        success: (res) => {
-          this.updateMessage(id, {
-            transcribing: false,
-            transcript: res.result || "未识别到文字"
-          });
-        },
-        fail: (error) => {
-          console.warn("语音转文字失败", error);
-          this.updateMessage(id, {
-            transcribing: false,
-            transcript: "语音转文字服务暂不可用"
-          });
-        }
-      });
+    if (message.transcribing) {
       return;
     }
     this.updateMessage(id, { transcribing: true });
-    setTimeout(() => {
-      const transcript = message.transcript || (message.text && message.text !== "语音消息" ? message.text : "语音转文字服务待接入");
+    try {
+      const result = await api.transcribeMessage(id);
+      if (result.message) {
+        this.updateMessage(id, {
+          ...result.message,
+          transcribing: false
+        });
+        return;
+      }
       this.updateMessage(id, {
         transcribing: false,
-        transcript
+        transcript: result.transcript || "未识别到文字"
       });
-    }, 420);
+    } catch (error) {
+      console.warn("语音转文字失败", error);
+      this.updateMessage(id, {
+        transcribing: false,
+        transcript: "语音转文字服务暂不可用"
+      });
+    }
   },
 
   updateMessage(id, patch) {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import base64
 import sqlite3
 import sys
 import time
@@ -25,6 +26,9 @@ ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", ROOT / "uploads"))
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(80 * 1024 * 1024)))
+TRANSCRIBE_API_URL = os.environ.get("TRANSCRIBE_API_URL", "")
+TRANSCRIBE_API_KEY = os.environ.get("TRANSCRIBE_API_KEY", "")
+TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "whisper-1")
 MINIPROGRAM_APPID = os.environ.get("WECHAT_MINIPROGRAM_APPID", "")
 MINIPROGRAM_SECRET = os.environ.get("WECHAT_MINIPROGRAM_SECRET", "")
 MINIPROGRAM_ENV_VERSION = os.environ.get("WECHAT_MINIPROGRAM_ENV_VERSION", "release")
@@ -166,6 +170,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "messages", "like_count", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "is_flash", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "flash_expires_at", "TEXT")
+    add_column_if_missing(conn, "messages", "transcript", "TEXT")
     add_column_if_missing(conn, "messages", "quote_message_id", "TEXT")
     add_column_if_missing(conn, "messages", "quote_sender", "TEXT")
     add_column_if_missing(conn, "messages", "quote_kind", "TEXT")
@@ -200,6 +205,7 @@ def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
           text TEXT,
           media_url TEXT,
           duration_seconds INTEGER,
+          transcript TEXT,
           quote_message_id TEXT,
           quote_sender TEXT,
           quote_kind TEXT,
@@ -213,11 +219,11 @@ def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
         );
         INSERT INTO messages
           (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
-           duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+           duration_seconds, transcript, quote_message_id, quote_sender, quote_kind, quote_text,
            quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at)
         SELECT
           id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
-          duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+          duration_seconds, transcript, quote_message_id, quote_sender, quote_kind, quote_text,
           quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at
         FROM messages_old;
         DROP TABLE messages_old;
@@ -384,6 +390,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.create_message(body), status=201)
             elif method == "POST" and path == "/api/messages/like":
                 self.respond(self.like_message(body), status=201)
+            elif method == "POST" and path == "/api/messages/transcribe":
+                self.respond(self.transcribe_message(body))
             elif method == "POST" and path == "/api/uploads":
                 self.respond(self.upload_media(body), status=201)
             elif method == "POST" and path == "/api/photo-burst":
@@ -702,9 +710,9 @@ class PartyHandler(BaseHTTPRequestHandler):
                 """
                 INSERT INTO messages
                   (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
-                   duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+                   duration_seconds, transcript, quote_message_id, quote_sender, quote_kind, quote_text,
                    quote_media_url, quote_duration_seconds, is_flash, flash_expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', '+8 hours', ?) ELSE NULL END)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', '+8 hours', ?) ELSE NULL END)
                 """,
                 (
                     msg_id,
@@ -716,6 +724,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                     body.get("text"),
                     body.get("mediaUrl"),
                     body.get("durationSeconds"),
+                    body.get("transcript"),
                     body.get("quoteMessageId"),
                     body.get("quoteSender"),
                     body.get("quoteKind"),
@@ -778,6 +787,84 @@ class PartyHandler(BaseHTTPRequestHandler):
             conn.execute("UPDATE messages SET like_count = like_count + 1 WHERE id = ?", (message_id,))
             updated = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
             return {"ok": True, "message": self.decorate_message(conn, updated)}
+
+    def transcribe_message(self, body: dict) -> dict:
+        message_id = require(body, "messageId")
+        with connect() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            if not row:
+                raise ApiError(404, "消息不存在")
+            if row["kind"] != "voice":
+                raise ApiError(400, "只有语音消息可以转文字")
+            if row["transcript"]:
+                return {
+                    "ok": True,
+                    "transcript": row["transcript"],
+                    "message": self.decorate_message(conn, row),
+                }
+
+            transcript = self.transcribe_voice_media(row)
+            conn.execute("UPDATE messages SET transcript = ? WHERE id = ?", (transcript, message_id))
+            updated = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            return {
+                "ok": True,
+                "transcript": transcript,
+                "message": self.decorate_message(conn, updated),
+            }
+
+    def transcribe_voice_media(self, row: sqlite3.Row) -> str:
+        media_url = row["media_url"]
+        if not media_url:
+            raise ApiError(400, "语音文件不存在")
+        audio = self.read_media_bytes(media_url)
+        if not TRANSCRIBE_API_URL:
+            duration = row["duration_seconds"] or 0
+            return f"语音转文字服务已接入自有接口，待配置识别服务。当前语音约 {duration} 秒。"
+
+        payload = {
+            "model": TRANSCRIBE_MODEL,
+            "language": "zh",
+            "mediaUrl": media_url,
+            "audioBase64": base64.b64encode(audio).decode("ascii"),
+            "filename": Path(urlparse(media_url).path).name or "voice.aac",
+        }
+        headers = {"Content-Type": "application/json"}
+        if TRANSCRIBE_API_KEY:
+            headers["Authorization"] = f"Bearer {TRANSCRIBE_API_KEY}"
+        request = Request(
+            TRANSCRIBE_API_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise ApiError(exc.code, f"转写服务失败: {raw[:120]}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise ApiError(502, f"转写服务连接失败: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ApiError(502, "转写服务返回格式错误") from exc
+        transcript = (result.get("text") or result.get("transcript") or result.get("result") or "").strip()
+        if not transcript:
+            raise ApiError(502, "转写服务未返回文字")
+        return transcript
+
+    def read_media_bytes(self, media_url: str) -> bytes:
+        parsed = urlparse(media_url)
+        if parsed.path.startswith("/uploads/"):
+            relative = parsed.path.removeprefix("/uploads/").strip("/")
+            if not relative or ".." in Path(relative).parts:
+                raise ApiError(400, "语音文件路径无效")
+            file_path = (UPLOAD_DIR / relative).resolve()
+            upload_root = UPLOAD_DIR.resolve()
+            if upload_root not in file_path.parents or not file_path.is_file():
+                raise ApiError(404, "语音文件不存在")
+            return file_path.read_bytes()
+        with urlopen(media_url, timeout=20) as response:
+            return response.read()
 
     def create_photo_burst(self, body: dict) -> dict:
         body["kind"] = "photo"
@@ -1156,6 +1243,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             "text": row["text"],
             "mediaUrl": row["media_url"],
             "durationSeconds": row["duration_seconds"],
+            "transcript": row["transcript"],
             "quote": {
                 "id": row["quote_message_id"],
                 "sender": row["quote_sender"],

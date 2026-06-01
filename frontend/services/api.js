@@ -573,6 +573,19 @@ function likeMessage(roomId, messageId) {
   }).then((res) => normalizeMessage(res.message));
 }
 
+function transcribeMessage(messageId) {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ transcript: "语音转文字服务待接入" });
+  }
+  return request("/api/messages/transcribe", {
+    method: "POST",
+    data: { messageId }
+  }).then((res) => ({
+    transcript: res.transcript,
+    message: res.message ? normalizeMessage(res.message) : null
+  }));
+}
+
 function setMemberSeat(memberId, seatStatus = "seated", adminKey = "") {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({ ok: true, memberId, seatStatus });
@@ -629,6 +642,7 @@ module.exports = {
   sendRoomMessage,
   uploadMedia,
   likeMessage,
+  transcribeMessage,
   setMemberSeat,
   kickMember,
   recordManagerWechatAction
