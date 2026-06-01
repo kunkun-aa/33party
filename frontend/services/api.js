@@ -80,13 +80,65 @@ function normalizeProfile(profile = {}) {
   };
 }
 
+function parseApiDate(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  const text = String(value);
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(text)) {
+    return new Date(text);
+  }
+  const parts = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (parts) {
+    return new Date(Date.UTC(
+      Number(parts[1]),
+      Number(parts[2]) - 1,
+      Number(parts[3]),
+      Number(parts[4]) - 8,
+      Number(parts[5]),
+      Number(parts[6] || 0)
+    ));
+  }
+  return new Date(text);
+}
+
+function formatBeijingTime(date) {
+  const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
+  const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
+  return `${hour}:${minute}`;
+}
+
+function formatBeijingDateTime(value) {
+  const date = parseApiDate(value);
+  if (!date || isNaN(date.getTime())) {
+    return value ? String(value).replace(/(:\d{2})(?:\.\d+)?$/, "") : "";
+  }
+  const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const year = beijing.getUTCFullYear();
+  const month = `${beijing.getUTCMonth() + 1}`.padStart(2, "0");
+  const day = `${beijing.getUTCDate()}`.padStart(2, "0");
+  const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
+  const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
 function normalizeMessage(message = {}) {
   const sender = message.sender || {};
   const senderId = sender.id || message.senderId || message.sender_id || "";
   const currentUserId = app.globalData.userProfile && app.globalData.userProfile.id;
-  const createdAt = message.createdAt ? new Date(message.createdAt.replace(" ", "T")) : new Date();
-  const hour = `${createdAt.getHours()}`.padStart(2, "0");
-  const minute = `${createdAt.getMinutes()}`.padStart(2, "0");
+  const createdAt = parseApiDate(message.createdAt) || new Date();
+  const flashExpiresAt = message.flashExpiresAt || message.flash_expires_at || "";
+  const flashExpiresDate = parseApiDate(flashExpiresAt);
+  const computedFlashSeconds = flashExpiresDate && createdAt
+    ? Math.max(Math.round((flashExpiresDate.getTime() - createdAt.getTime()) / 1000), 1)
+    : 0;
+  const flashRemainingSeconds = flashExpiresDate
+    ? Math.max(Math.ceil((flashExpiresDate.getTime() - Date.now()) / 1000), 0)
+    : Number(message.flashRemainingSeconds || message.flashSeconds || computedFlashSeconds || 0);
 
   return {
     id: message.id,
@@ -95,15 +147,17 @@ function normalizeMessage(message = {}) {
     senderType: message.senderType || message.sender_type || "user",
     sender: sender.displayName || sender.nickname || message.sender || "系统",
     avatar: sender.avatarUrl || message.avatar || "",
-    time: message.time || `${hour}:${minute}`,
+    time: message.time || formatBeijingTime(createdAt),
     text: message.text,
     image: message.mediaUrl || message.image,
     duration: message.duration || (message.durationSeconds ? `${message.durationSeconds}''` : "06''"),
+    durationSeconds: message.durationSeconds || message.duration_seconds || 6,
     likeCount: message.likeCount || message.likeCount === 0 ? message.likeCount : (message.likes || 0),
-    isFlash: !!message.isFlash,
-    flashSeconds: message.flashSeconds || 10,
-    flashExpiresAt: message.flashExpiresAt || "",
-    flashExpired: !!(message.isFlash && message.flashExpiresAt && new Date(message.flashExpiresAt.replace(" ", "T")).getTime() <= Date.now()),
+    isFlash: !!(message.isFlash || message.is_flash),
+    flashSeconds: message.flashSeconds || computedFlashSeconds || 10,
+    flashRemainingSeconds,
+    flashExpiresAt,
+    flashExpired: !!((message.isFlash || message.is_flash) && flashExpiresDate && flashExpiresDate.getTime() <= Date.now()),
     isMine: !!(message.isMine || (currentUserId && senderId && currentUserId === senderId))
   };
 }
@@ -124,7 +178,7 @@ function normalizeRoom(payload = {}) {
     scene: table.shareScene || party.sceneCode || room.scene,
     title: party.title || room.title || "33 Party 主局",
     statusText: table.statusText || room.statusText || (openSeats > 0 ? "人数未满" : "人数已满"),
-    liveTag: party.startsAt ? `开局时间 ${party.startsAt}` : room.liveTag || "今晚主局",
+    liveTag: party.startsAt ? `开局时间 ${formatBeijingDateTime(party.startsAt)}` : room.liveTag || "今晚主局",
     manager: {
       id: admin.id,
       name: admin.displayName || room.manager?.name || "局头",
@@ -186,7 +240,7 @@ function normalizeAdminTable(table = {}, party = {}) {
     messageCount: table.messageCount || 0,
     photoCount: table.photoBurstCount || table.photoCount || 0,
     lastMessage: recentMessage.text || "暂无新消息",
-    updatedAt: recentMessage.createdAt || "刚刚",
+    updatedAt: recentMessage.createdAt ? formatBeijingDateTime(recentMessage.createdAt) : "刚刚",
     joinCode: table.shareScene,
     joinLink: `33party://join?scene=${table.shareScene}`,
     note: table.openSeats > 0 ? `还有 ${table.openSeats} 个空位` : "已满员，留意现场秩序",
@@ -429,7 +483,7 @@ function sendRoomMessage(roomId, tableId, message) {
       senderId: app.globalData.userProfile && app.globalData.userProfile.id,
       kind: message.type,
       text: message.text,
-      mediaUrl: message.image,
+      mediaUrl: message.mediaUrl || message.image || message.voicePath,
       durationSeconds: message.durationSeconds,
       isFlash: message.isFlash,
       flashSeconds: message.flashSeconds

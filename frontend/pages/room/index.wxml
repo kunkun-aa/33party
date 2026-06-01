@@ -113,10 +113,15 @@
 
               <view wx:elif="{{item.type === 'photo'}}" class="photo-message">
                 <view wx:if="{{item.flashExpired}}" class="flash-expired">照片已销毁</view>
-                <image wx:else class="photo-shot" src="{{item.image}}" mode="aspectFill"></image>
-                <view class="photo-actions">
-                  <text>{{item.text}}</text>
+                <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill"></image>
+                <view wx:else class="photo-placeholder">照片暂不可见</view>
+                <view class="photo-actions" wx:if="{{item.isFlash || item.text}}">
+                  <text>{{item.isFlash ? item.flashRemainingSeconds + ' 秒后自动销毁' : item.text}}</text>
                 </view>
+              </view>
+
+              <view wx:else class="bubble text-bubble">
+                <text>{{item.text || '消息暂无法展示'}}</text>
               </view>
             </view>
           </view>
@@ -125,6 +130,34 @@
     </scroll-view>
 
     <view class="composer safe-bottom" wx:if="{{profileReady}}">
+      <view class="voice-recording" wx:if="{{voiceRecording}}">
+        <view class="voice-live">
+          <view class="voice-bars">
+            <text></text>
+            <text></text>
+            <text></text>
+            <text></text>
+          </view>
+          <text>正在录音 {{voiceRecordSeconds}}''</text>
+        </view>
+        <view class="voice-action cancel" bindtap="cancelVoiceRecord">取消</view>
+        <view class="voice-action finish" bindtap="finishVoiceRecord">完成</view>
+      </view>
+
+      <view class="voice-review" wx:elif="{{voiceReview}}">
+        <view class="voice-live">
+          <view class="voice-bars">
+            <text></text>
+            <text></text>
+            <text></text>
+            <text></text>
+          </view>
+          <text>语音 {{voiceReview.duration}}</text>
+        </view>
+        <view class="voice-action cancel" bindtap="discardVoiceReview">取消</view>
+        <view class="voice-action finish" bindtap="sendVoiceReview">{{sending ? '...' : '发送'}}</view>
+      </view>
+
       <view class="composer-options">
         <view class="flash-toggle {{flashEnabled ? 'active' : ''}}" bindtap="toggleFlash">
           <text class="check-box">{{flashEnabled ? '✓' : ''}}</text>
@@ -137,7 +170,7 @@
       </view>
       <view class="composer-row">
         <input class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
-        <view class="composer-tool voice-tool" bindtap="onSendVoice">语音</view>
+        <view class="composer-tool voice-tool {{voiceRecording ? 'recording' : ''}}" bindlongpress="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd">语音</view>
         <view class="composer-tool photo-tool" bindtap="onChoosePhoto">照片</view>
         <view class="composer-tool send-button" bindtap="onSendText">{{sending ? '...' : '发送'}}</view>
       </view>

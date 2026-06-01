@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS bars (
   address TEXT NOT NULL,
   latitude REAL,
   longitude REAL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS admins (
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS admins (
   wechat_id TEXT NOT NULL,
   wechat_qr_url TEXT,
   is_default INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS parties (
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS parties (
   scene_code TEXT NOT NULL UNIQUE,
   status TEXT NOT NULL DEFAULT 'open',
   starts_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS party_tables (
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS party_tables (
   status TEXT NOT NULL DEFAULT 'open',
   share_scene TEXT NOT NULL UNIQUE,
   head_member_id TEXT REFERENCES party_members(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
   UNIQUE(party_id, table_no)
 );
 
@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS users (
   phone TEXT,
   wechat_id TEXT,
   profile_complete INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS party_members (
@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS party_members (
   user_id TEXT NOT NULL REFERENCES users(id),
   role TEXT NOT NULL DEFAULT 'guest',
   seat_status TEXT NOT NULL DEFAULT 'ghost',
-  joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  joined_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
   UNIQUE(party_id, user_id)
 );
 
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
   like_count INTEGER NOT NULL DEFAULT 0,
   is_flash INTEGER NOT NULL DEFAULT 0,
   flash_expires_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS contact_requests (
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS contact_requests (
   target_type TEXT NOT NULL CHECK(target_type IN ('user', 'admin')),
   target_id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'allowed',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE TABLE IF NOT EXISTS admin_sessions (
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   admin_id TEXT NOT NULL REFERENCES admins(id),
   openid TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_party_tables_party ON party_tables(party_id);

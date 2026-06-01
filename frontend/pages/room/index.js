@@ -24,6 +24,9 @@ Page({
     sending: false,
     flashEnabled: false,
     flashSeconds: 5,
+    voiceRecording: false,
+    voiceRecordSeconds: 0,
+    voiceReview: null,
     music: {
       playing: false,
       title: "台内背景音乐",
@@ -37,6 +40,7 @@ Page({
     this.loadProfile();
     this.loadRoom(entry);
     this.initMusic();
+    this.initRecorder();
   },
 
   onUnload() {
@@ -44,6 +48,14 @@ Page({
       this.musicContext.stop();
       this.musicContext.destroy();
     }
+    if (this.recordTimer) {
+      clearInterval(this.recordTimer);
+    }
+    if (this.recorderManager && this.data.voiceRecording) {
+      this.voiceRecordCanceled = true;
+      this.recorderManager.stop();
+    }
+    this.stopFlashCountdown();
   },
 
   loadProfile() {
@@ -61,15 +73,18 @@ Page({
     try {
       const room = await api.getRoomByEntry(entry);
       this.setData({
+        room: this.prepareFlashMessages(room),
+        loading: false
+      });
+      this.startFlashCountdown();
+    } catch (error) {
+      console.warn("房间接口加载失败，已回退到本地演示数据", error);
+      const room = this.prepareFlashMessages(buildRoom(entry));
+      this.setData({
         room,
         loading: false
       });
-    } catch (error) {
-      console.warn("房间接口加载失败，已回退到本地演示数据", error);
-      this.setData({
-        room: buildRoom(entry),
-        loading: false
-      });
+      this.startFlashCountdown();
       wx.showToast({
         title: "后端连接失败，已显示演示数据",
         icon: "none"
@@ -201,6 +216,23 @@ Page({
     this.musicContext.play();
   },
 
+  initRecorder() {
+    if (!wx.getRecorderManager) {
+      return;
+    }
+    this.recorderManager = wx.getRecorderManager();
+    this.recorderManager.onStop((res) => this.handleRecordStop(res));
+    this.recorderManager.onError((error) => {
+      console.warn("录音失败", error);
+      this.stopRecordTimer();
+      this.setData({
+        voiceRecording: false,
+        voiceRecordSeconds: 0
+      });
+      wx.showToast({ title: "录音暂不可用", icon: "none" });
+    });
+  },
+
   openMap() {
     const venue = this.data.room && this.data.room.venue;
     if (!venue || !venue.latitude || !venue.longitude) {
@@ -253,10 +285,123 @@ Page({
     }
   },
 
-  async onSendVoice() {
+  onVoiceTouchStart() {
+    if (!this.data.room || this.data.sending || this.data.voiceRecording) {
+      return;
+    }
+    if (!this.recorderManager) {
+      wx.showToast({ title: "当前环境不支持录音", icon: "none" });
+      return;
+    }
+    this.recordStartedAt = Date.now();
+    this.setData({
+      voiceRecording: true,
+      voiceRecordSeconds: 0,
+      voiceReview: null
+    });
+    this.startRecordTimer();
+    try {
+      this.recorderManager.start({
+        duration: 60000,
+        sampleRate: 16000,
+        numberOfChannels: 1,
+        encodeBitRate: 48000,
+        format: "mp3"
+      });
+    } catch (error) {
+      console.warn("启动录音失败", error);
+      this.stopRecordTimer();
+      this.setData({
+        voiceRecording: false,
+        voiceRecordSeconds: 0
+      });
+      wx.showToast({ title: "录音权限未开启", icon: "none" });
+    }
+  },
+
+  onVoiceTouchEnd() {
+    if (this.data.voiceRecording) {
+      this.finishVoiceRecord();
+    }
+  },
+
+  finishVoiceRecord() {
+    if (!this.data.voiceRecording || !this.recorderManager) {
+      return;
+    }
+    this.recorderManager.stop();
+  },
+
+  cancelVoiceRecord() {
+    if (this.data.voiceRecording && this.recorderManager) {
+      this.voiceRecordCanceled = true;
+      this.recorderManager.stop();
+    }
+    this.stopRecordTimer();
+    this.setData({
+      voiceRecording: false,
+      voiceRecordSeconds: 0,
+      voiceReview: null
+    });
+  },
+
+  handleRecordStop(res = {}) {
+    const durationSeconds = Math.max(Math.round((res.duration || (Date.now() - this.recordStartedAt)) / 1000), 1);
+    const wasCanceled = this.voiceRecordCanceled;
+    this.voiceRecordCanceled = false;
+    this.stopRecordTimer();
+    this.setData({
+      voiceRecording: false,
+      voiceRecordSeconds: 0
+    });
+    if (wasCanceled) {
+      return;
+    }
+    if (!res.tempFilePath) {
+      wx.showToast({ title: "录音没有生成文件", icon: "none" });
+      return;
+    }
+    if (durationSeconds < 1) {
+      wx.showToast({ title: "录音时间太短", icon: "none" });
+      return;
+    }
+    this.setData({
+      voiceReview: {
+        tempFilePath: res.tempFilePath,
+        durationSeconds,
+        duration: `${durationSeconds}''`
+      }
+    });
+  },
+
+  startRecordTimer() {
+    this.stopRecordTimer();
+    this.recordTimer = setInterval(() => {
+      const seconds = Math.max(Math.floor((Date.now() - this.recordStartedAt) / 1000), 0);
+      this.setData({ voiceRecordSeconds: seconds });
+    }, 300);
+  },
+
+  stopRecordTimer() {
+    if (this.recordTimer) {
+      clearInterval(this.recordTimer);
+      this.recordTimer = null;
+    }
+  },
+
+  discardVoiceReview() {
+    this.setData({ voiceReview: null });
+  },
+
+  async sendVoiceReview() {
+    const review = this.data.voiceReview;
+    if (!review || this.data.sending) {
+      return;
+    }
     if (!this.data.room) {
       return;
     }
+    this.setData({ sending: true });
     const profile = await this.ensureProfileSynced();
     const message = {
       type: "voice",
@@ -265,15 +410,21 @@ Page({
       sender: profile.nickName || "我",
       avatar: profile.avatarUrl,
       time: this.formatTime(new Date()),
-      duration: "06''",
+      duration: review.duration,
+      durationSeconds: review.durationSeconds,
+      voicePath: review.tempFilePath,
       text: "语音消息"
     };
     try {
       const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
       this.appendMessage(saved);
+      this.setData({ voiceReview: null });
     } catch (error) {
       console.warn("语音消息发送失败，已本地追加", error);
       this.appendMessage({ ...message, id: `local_voice_${Date.now()}` });
+      this.setData({ voiceReview: null });
+    } finally {
+      this.setData({ sending: false });
     }
   },
 
@@ -292,11 +443,12 @@ Page({
           sender: profile.nickName || "我",
           avatar: profile.avatarUrl,
           time: this.formatTime(new Date()),
-          text: this.data.flashEnabled ? `${this.data.flashSeconds} 秒后自动销毁` : "发送了一张照片",
+          text: "",
           image: file.tempFilePath,
           likeCount: 0,
           isFlash: this.data.flashEnabled,
-          flashSeconds: this.data.flashSeconds
+          flashSeconds: this.data.flashSeconds,
+          flashRemainingSeconds: this.data.flashEnabled ? this.data.flashSeconds : 0
         };
         try {
           const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
@@ -364,26 +516,128 @@ Page({
   },
 
   appendMessage(message) {
+    const nextMessage = this.prepareFlashMessage(message);
     this.setData({
-      "room.messages": [...this.data.room.messages, message]
+      "room.messages": [...this.data.room.messages, nextMessage]
     });
-    this.scheduleFlashRemoval(message);
+    this.startFlashCountdown();
   },
 
-  scheduleFlashRemoval(message) {
+  prepareFlashMessages(room) {
+    if (!room || !room.messages) {
+      return room;
+    }
+    return {
+      ...room,
+      messages: room.messages.map((message) => this.prepareFlashMessage(message))
+    };
+  },
+
+  prepareFlashMessage(message) {
     if (!message || !message.isFlash) {
+      return message;
+    }
+    const expiresAt = this.getFlashExpiresAt(message);
+    const remaining = expiresAt ? Math.max(Math.ceil((expiresAt - Date.now()) / 1000), 0) : Math.max(Number(message.flashRemainingSeconds || message.flashSeconds || 5), 0);
+    const flashStartedAt = message.flashStartedAt || (expiresAt ? expiresAt - Math.max(Number(message.flashSeconds || remaining || 5), 1) * 1000 : Date.now());
+    return {
+      ...message,
+      flashStartedAt,
+      flashExpiresAt: message.flashExpiresAt || (expiresAt ? new Date(expiresAt).toISOString() : ""),
+      flashRemainingSeconds: remaining,
+      flashExpired: message.flashExpired || remaining <= 0
+    };
+  },
+
+  startFlashCountdown() {
+    const hasActiveFlash = this.updateFlashCountdown();
+    if (!hasActiveFlash || this.flashCountdownTimer) {
       return;
     }
-    const timeout = Math.max(Number(message.flashSeconds || 5), 1) * 1000;
-    setTimeout(() => {
-      const messages = (this.data.room && this.data.room.messages || []).filter((item) => item.id !== message.id);
-      this.setData({ "room.messages": messages });
-    }, timeout);
+    this.flashCountdownTimer = setInterval(() => {
+      this.updateFlashCountdown();
+    }, 1000);
+  },
+
+  stopFlashCountdown() {
+    if (this.flashCountdownTimer) {
+      clearInterval(this.flashCountdownTimer);
+      this.flashCountdownTimer = null;
+    }
+  },
+
+  updateFlashCountdown() {
+    const room = this.data.room;
+    const messages = room && room.messages || [];
+    let hasActiveFlash = false;
+    let changed = false;
+    const nextMessages = messages.map((message) => {
+      if (!message.isFlash || message.flashExpired) {
+        return message;
+      }
+      const expiresAt = this.getFlashExpiresAt(message);
+      const remaining = expiresAt ? Math.max(Math.ceil((expiresAt - Date.now()) / 1000), 0) : 0;
+      hasActiveFlash = hasActiveFlash || remaining > 0;
+      if (message.flashRemainingSeconds === remaining && message.flashExpired === (remaining <= 0)) {
+        return message;
+      }
+      changed = true;
+      return {
+        ...message,
+        flashRemainingSeconds: remaining,
+        flashExpired: remaining <= 0
+      };
+    });
+
+    if (changed) {
+      this.setData({ "room.messages": nextMessages });
+    }
+    if (!hasActiveFlash) {
+      this.stopFlashCountdown();
+    }
+    return hasActiveFlash;
+  },
+
+  getFlashExpiresAt(message) {
+    if (!message || !message.isFlash) {
+      return 0;
+    }
+    if (message.flashExpiresAt) {
+      const timestamp = this.parseApiDate(message.flashExpiresAt).getTime();
+      if (!isNaN(timestamp)) {
+        return timestamp;
+      }
+    }
+    const startedAt = message.flashStartedAt || Date.now();
+    return startedAt + Math.max(Number(message.flashSeconds || 5), 1) * 1000;
+  },
+
+  parseApiDate(value) {
+    if (!value) {
+      return new Date(NaN);
+    }
+    const text = String(value);
+    if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(text)) {
+      return new Date(text);
+    }
+    const parts = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (parts) {
+      return new Date(Date.UTC(
+        Number(parts[1]),
+        Number(parts[2]) - 1,
+        Number(parts[3]),
+        Number(parts[4]) - 8,
+        Number(parts[5]),
+        Number(parts[6] || 0)
+      ));
+    }
+    return new Date(text);
   },
 
   formatTime(date) {
-    const hour = `${date.getHours()}`.padStart(2, "0");
-    const minute = `${date.getMinutes()}`.padStart(2, "0");
+    const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
+    const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
     return `${hour}:${minute}`;
   }
 });

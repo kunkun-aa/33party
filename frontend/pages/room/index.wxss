@@ -82,7 +82,7 @@ page {
   z-index: 1;
   height: 0;
   min-height: 0;
-  padding-bottom: 330rpx;
+  padding-bottom: calc(190rpx + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
@@ -620,6 +620,18 @@ page {
   height: 310rpx;
 }
 
+.photo-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 520rpx;
+  height: 220rpx;
+  color: rgba(255, 248, 237, 0.72);
+  font-size: 26rpx;
+  font-weight: 800;
+  background: rgba(8, 11, 16, 0.34);
+}
+
 .flash-expired {
   position: relative;
   display: flex;
@@ -674,7 +686,7 @@ page {
   bottom: 0;
   left: 18rpx;
   z-index: 5;
-  padding: 16rpx 18rpx 42rpx;
+  padding: 16rpx 18rpx calc(22rpx + env(safe-area-inset-bottom));
   background: linear-gradient(180deg, rgba(20, 23, 30, 0.78), rgba(8, 11, 16, 0.92));
   border: 1rpx solid rgba(255, 255, 255, 0.1);
   border-bottom: 0;
@@ -686,6 +698,56 @@ page {
   gap: 10rpx;
   width: 100%;
   min-width: 0;
+}
+
+.voice-recording,
+.voice-review {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  width: 100%;
+  min-height: 70rpx;
+  margin-bottom: 14rpx;
+  padding: 10rpx 12rpx;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1rpx solid rgba(255, 255, 255, 0.1);
+  border-radius: 20rpx;
+}
+
+.voice-review {
+  border-color: rgba(226, 178, 99, 0.18);
+}
+
+.voice-live {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  min-width: 0;
+  color: rgba(255, 248, 237, 0.9);
+  font-size: 25rpx;
+  font-weight: 800;
+}
+
+.voice-action {
+  flex: 0 0 auto;
+  min-width: 82rpx;
+  height: 50rpx;
+  padding: 0 18rpx;
+  color: rgba(255, 248, 237, 0.76);
+  font-size: 23rpx;
+  font-weight: 900;
+  line-height: 50rpx;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1rpx solid rgba(255, 255, 255, 0.1);
+  border-radius: 999rpx;
+}
+
+.voice-action.finish {
+  color: #071311;
+  background: linear-gradient(135deg, #d7fb52, #5bd4c7);
+  border-color: rgba(255, 255, 255, 0.18);
 }
 
 .chat-input,
@@ -767,6 +829,11 @@ page {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.voice-tool.recording {
+  color: #071311;
+  background: linear-gradient(135deg, #d7fb52, #5bd4c7);
+}
+
 .send-button {
   flex: 0 0 76rpx;
   width: 76rpx;
@@ -784,6 +851,7 @@ page {
 
 .composer-tool:active,
 .send-button:active,
+.voice-action:active,
 .flash-toggle:active,
 .flash-second:active,
 .gender-tab:active,

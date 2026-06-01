@@ -36,7 +36,7 @@ ONLINE_WINDOW_SECONDS = int(os.environ.get("ONLINE_WINDOW_SECONDS", "300"))
 
 
 def now_sql() -> str:
-    return "CURRENT_TIMESTAMP"
+    return "datetime('now', '+8 hours')"
 
 
 def new_id(prefix: str) -> str:
@@ -200,7 +200,7 @@ def seed_db(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         INSERT INTO parties (id, bar_id, admin_id, title, scene_code, starts_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now', '+1 hour'))
+        VALUES (?, ?, ?, ?, ?, datetime('now', '+9 hours'))
         """,
         ("party_demo", "bar_demo", "admin_mimei", "周六拼台主局", "party_demo"),
     )
@@ -478,7 +478,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                     """
                     UPDATE users
                     SET nickname = ?, avatar_url = ?, gender = ?, phone = ?, wechat_id = ?,
-                        profile_complete = ?, updated_at = CURRENT_TIMESTAMP
+                        profile_complete = ?, updated_at = datetime('now', '+8 hours')
                     WHERE id = ?
                     """,
                     (nickname, avatar_url, gender, phone, wechat_id, profile_complete, user_id),
@@ -527,7 +527,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                 conn.execute(
                     """
                     UPDATE party_members
-                    SET table_id = ?, seat_status = 'ghost', last_seen_at = CURRENT_TIMESTAMP
+                    SET table_id = ?, seat_status = 'ghost', last_seen_at = datetime('now', '+8 hours')
                     WHERE id = ?
                     """,
                     (table_id, existing["id"]),
@@ -595,7 +595,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                 INSERT INTO messages
                   (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
                    duration_seconds, is_flash, flash_expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', ?) ELSE NULL END)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', '+8 hours', ?) ELSE NULL END)
                 """,
                 (
                     msg_id,
@@ -774,7 +774,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             conn.execute(
                 """
                 INSERT INTO parties (id, bar_id, admin_id, title, scene_code, starts_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, datetime('now', '+8 hours'))
                 """,
                 (party_id, bar_id, admin_id, title, scene_code),
             )
@@ -800,7 +800,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             if not row:
                 raise ApiError(404, "成员不存在")
             conn.execute(
-                "UPDATE party_members SET seat_status = ?, last_seen_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE party_members SET seat_status = ?, last_seen_at = datetime('now', '+8 hours') WHERE id = ?",
                 (seat_status, member_id),
             )
             return {"ok": True, "memberId": member_id, "seatStatus": seat_status}
@@ -1037,7 +1037,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         conn.execute(
             """
             UPDATE party_members
-            SET last_seen_at = CURRENT_TIMESTAMP
+            SET last_seen_at = datetime('now', '+8 hours')
             WHERE party_id = ? AND table_id = ? AND user_id = ?
             """,
             (party_id, table_id, user_id),
