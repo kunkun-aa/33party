@@ -208,8 +208,23 @@ Page({
   },
 
   onChooseAvatar(event) {
+    const avatarUrl = event.detail && event.detail.avatarUrl;
+    if (!avatarUrl) {
+      return;
+    }
     this.setData({
-      "profileForm.avatarUrl": event.detail.avatarUrl
+      "profileForm.avatarUrl": avatarUrl
+    });
+  },
+
+  onProfileAvatarError() {
+    const savedProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || {};
+    this.setData({
+      "profileForm.avatarUrl": savedProfile.avatarUrl || ""
+    });
+    wx.showToast({
+      title: "头像临时文件失效，请重新选择",
+      icon: "none"
     });
   },
 

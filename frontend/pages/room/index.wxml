@@ -209,11 +209,9 @@
           <view class="profile-heading">
             <text class="profile-kicker">{{profileReady ? '个人资料' : '首次进入'}}</text>
             <text class="profile-title">{{profileReady ? '修改头像和昵称' : '完善头像和昵称'}}</text>
-            <text class="profile-copy">{{profileReady ? '保存后，局头和同桌成员会立即看到最新资料。' : '进入主局后，局头和同桌成员会看到你的资料。'}}</text>
           </view>
           <button class="avatar-picker" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
-            <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
-            <text wx:else>选头像</text>
+            <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill" binderror="onProfileAvatarError"></image>
           </button>
         </view>
         <input class="profile-input" type="nickname" value="{{profileForm.nickName}}" bindinput="onNickNameInput" placeholder="输入昵称" placeholder-class="input-placeholder" />
