@@ -38,6 +38,7 @@ def check_static_files() -> None:
     assert_true("wx.requestSubscribeMessage" in room_js, "room page should request subscribe message permission")
     assert_true("connectRoomSocket" in room_js, "room page should connect websocket")
     assert_true("agreementAccepted" in room_js and "submitReport" in room_js, "room page should require agreement and support reports")
+    assert_true("mediaPreview" in room_js and "wx.previewImage" not in room_js, "room page should use custom zoomable media preview")
     assert_true("/api/messages/subscribe" in api_js, "api service should save message subscriptions")
     assert_true("/api/reports" in api_js, "api service should submit reports")
     assert_true("/api/admin/users/ban" in api_js, "api service should expose admin ban API")

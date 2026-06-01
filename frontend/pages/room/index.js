@@ -41,7 +41,15 @@ Page({
     voiceRecordSeconds: 0,
     voiceReview: null,
     chatScrollTarget: "",
-    quotedMessage: null
+    quotedMessage: null,
+    mediaPreview: {
+      visible: false,
+      url: "",
+      scale: 1,
+      x: 0,
+      y: 0,
+      lastTapAt: 0
+    }
   },
 
   onLoad(options) {
@@ -788,13 +796,7 @@ Page({
       return;
     }
     if (message.type === "photo" && message.image) {
-      const urls = (this.data.room && this.data.room.messages || [])
-        .filter((item) => item.type === "photo" && item.image && !item.flashExpired)
-        .map((item) => item.image);
-      wx.previewImage({
-        current: message.image,
-        urls: urls.length ? urls : [message.image]
-      });
+      this.openMediaPreview(message.image);
       return;
     }
     if (message.type === "video" && message.video && wx.previewMedia) {
@@ -815,24 +817,60 @@ Page({
     if (!url) {
       return;
     }
-    const memberUrls = (this.data.room && this.data.room.members || [])
-      .map((member) => member.avatar)
-      .filter(Boolean);
-    const messageUrls = (this.data.room && this.data.room.messages || [])
-      .map((message) => message.avatar)
-      .filter(Boolean);
-    const seen = {};
-    const urls = [url, ...memberUrls, ...messageUrls].filter((item) => {
-      if (seen[item]) {
-        return false;
+    this.openMediaPreview(url);
+  },
+
+  openMediaPreview(url) {
+    if (!url) {
+      return;
+    }
+    this.setData({
+      mediaPreview: {
+        visible: true,
+        url,
+        scale: 1,
+        x: 0,
+        y: 0,
+        lastTapAt: 0
       }
-      seen[item] = true;
-      return true;
     });
-    wx.previewImage({
-      current: url,
-      urls: urls.length ? urls : [url]
+  },
+
+  closeMediaPreview() {
+    this.setData({
+      "mediaPreview.visible": false,
+      "mediaPreview.url": "",
+      "mediaPreview.scale": 1,
+      "mediaPreview.x": 0,
+      "mediaPreview.y": 0,
+      "mediaPreview.lastTapAt": 0
     });
+  },
+
+  onMediaPreviewScale(event) {
+    const scale = event.detail && event.detail.scale;
+    if (scale) {
+      this.setData({ "mediaPreview.scale": scale });
+    }
+  },
+
+  onMediaPreviewImageTap(event) {
+    const now = event.timeStamp || Date.now();
+    const lastTapAt = this.data.mediaPreview.lastTapAt || 0;
+    if (now - lastTapAt > 0 && now - lastTapAt < 280) {
+      const nextScale = this.data.mediaPreview.scale > 1 ? 1 : 2;
+      this.setData({
+        "mediaPreview.scale": nextScale,
+        "mediaPreview.x": 0,
+        "mediaPreview.y": 0,
+        "mediaPreview.lastTapAt": 0
+      });
+      return;
+    }
+    this.setData({ "mediaPreview.lastTapAt": now });
+  },
+
+  noop() {
   },
 
   markVoicePlaying(id) {

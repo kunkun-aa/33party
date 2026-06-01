@@ -248,6 +248,26 @@
         <button class="profile-submit" bindtap="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">{{profileReady ? '保存资料' : '进入主局'}}</button>
       </view>
     </view>
+
+    <view class="media-preview-mask" wx:if="{{mediaPreview.visible}}" catchtap="closeMediaPreview">
+      <movable-area class="media-preview-area" scale-area>
+        <movable-view
+          class="media-preview-view"
+          direction="all"
+          scale
+          scale-min="1"
+          scale-max="4"
+          scale-value="{{mediaPreview.scale}}"
+          x="{{mediaPreview.x}}"
+          y="{{mediaPreview.y}}"
+          bindscale="onMediaPreviewScale"
+          catchtap="onMediaPreviewImageTap"
+        >
+          <image class="media-preview-image" src="{{mediaPreview.url}}" mode="aspectFit" catchtap="onMediaPreviewImageTap"></image>
+        </movable-view>
+      </movable-area>
+      <view class="media-preview-close" catchtap="closeMediaPreview">×</view>
+    </view>
   </block>
 
   <block wx:else>
