@@ -199,6 +199,19 @@ Page({
       this.scrollChatToBottom();
       this.connectRoomSocket();
     } catch (error) {
+      if (error && /已结束/.test(error.message || "")) {
+        console.warn("房间已结束", error);
+        this.setData({
+          room: null,
+          canChat: false,
+          loading: false
+        });
+        wx.showToast({
+          title: error.message || "该局已结束",
+          icon: "none"
+        });
+        return;
+      }
       console.warn("房间接口加载失败，已回退到本地演示数据", error);
       const room = this.prepareFlashMessages(buildRoom(entry));
       this.setData({
@@ -696,6 +709,58 @@ Page({
     });
   },
 
+  onChooseEmoji() {
+    if (!this.canCurrentUserChat()) {
+      wx.showToast({ title: "占位后才能发言", icon: "none" });
+      return;
+    }
+    if (!wx.chooseMessageFile) {
+      wx.showToast({ title: "当前微信版本暂不支持选择表情", icon: "none" });
+      return;
+    }
+    wx.chooseMessageFile({
+      count: 1,
+      type: "image",
+      success: async (res) => {
+        const file = res.tempFiles && res.tempFiles[0];
+        if (!file || !file.path) {
+          wx.showToast({ title: "未选择表情", icon: "none" });
+          return;
+        }
+        const profile = await this.ensureProfileSynced();
+        const message = {
+          type: "emoji",
+          senderId: profile.id,
+          isMine: true,
+          sender: profile.nickName || "我",
+          avatar: profile.avatarUrl,
+          time: this.formatTime(new Date()),
+          text: "[表情]",
+          image: file.path,
+          mediaUrl: file.path,
+          likeCount: 0,
+          quote: this.data.quotedMessage
+        };
+        try {
+          const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+          this.appendMessage(saved);
+          this.setData({ quotedMessage: null });
+        } catch (error) {
+          console.warn("表情消息发送失败，已本地追加", error);
+          this.appendMessage({ ...message, id: `local_emoji_${Date.now()}` });
+          this.setData({ quotedMessage: null });
+          wx.showToast({ title: "后端暂未接收，已本地显示", icon: "none" });
+        }
+      },
+      fail: (error) => {
+        if (error && /cancel/i.test(error.errMsg || "")) {
+          return;
+        }
+        wx.showToast({ title: "表情选择失败", icon: "none" });
+      }
+    });
+  },
+
   onQuoteMessage(event) {
     const message = this.findMessageById(event.currentTarget.dataset.id);
     if (!message) {
@@ -789,6 +854,9 @@ Page({
     if (message.type === "photo") {
       return "[图片]";
     }
+    if (message.type === "emoji") {
+      return "[表情]";
+    }
     if (message.type === "video") {
       return "[视频]";
     }
@@ -831,7 +899,7 @@ Page({
     if (!message) {
       return;
     }
-    if (message.type === "photo" && message.image) {
+    if ((message.type === "photo" || message.type === "emoji") && message.image) {
       this.openMediaPreview(message.image);
       return;
     }
@@ -1123,7 +1191,21 @@ Page({
     }
     if (payload.type === "member.updated" && payload.member) {
       this.applyMemberUpdate(payload.member, payload.table);
+      return;
     }
+    if (payload.type === "party.ended") {
+      this.handlePartyEnded();
+    }
+  },
+
+  handlePartyEnded() {
+    this.closeRoomSocket();
+    this.setData({
+      canChat: false,
+      "room.statusText": "已结束",
+      "room.room.seatStatusText": "已结束"
+    });
+    wx.showToast({ title: "该局已结束", icon: "none" });
   },
 
   applyUserProfileUpdate(user = {}) {
@@ -1519,6 +1601,8 @@ Page({
             const savedPath = saveRes.savedFilePath;
             const patch = { localCached: true, mediaUrl: savedPath };
             if (message.type === "photo") {
+              patch.image = savedPath;
+            } else if (message.type === "emoji") {
               patch.image = savedPath;
             } else if (message.type === "video") {
               patch.video = savedPath;

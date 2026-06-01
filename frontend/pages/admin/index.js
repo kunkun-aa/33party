@@ -6,6 +6,16 @@ const adminProfile = {
   visibleToUsers: true
 }
 
+function defaultStartsAt() {
+  const date = new Date(Date.now() + 2 * 60 * 60 * 1000)
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  const hour = `${date.getHours()}`.padStart(2, '0')
+  const minute = `${date.getMinutes()}`.padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
 const mockTables = [
   {
     id: 'T01',
@@ -140,10 +150,17 @@ Page({
       title: '周六拼台主局',
       tableNo: 'A01',
       capacity: '8',
+      startsAt: defaultStartsAt(),
       barName: '33 Party Lounge',
-      barAddress: '深圳市南山区后海中心路 33 Party Lounge'
+      barAddress: '深圳市南山区后海中心路 33 Party Lounge',
+      latitude: '',
+      longitude: ''
     },
     creatingParty: false,
+    endingParty: false,
+    deletingParties: false,
+    endedTables: [],
+    selectedEndedPartyIds: [],
     reports: [],
     reportFilter: 'pending',
     reportLoading: false,
@@ -161,6 +178,15 @@ Page({
     filter: 'all',
     copiedText: '',
     refreshing: false,
+    invitePanelVisible: false,
+    inviteLoading: false,
+    inviteInfo: {
+      tableNo: '',
+      scene: '',
+      link: '',
+      qrcodePath: '',
+      error: ''
+    },
     topSafeArea: 0
   },
 
@@ -305,17 +331,51 @@ Page({
     })
   },
 
+  chooseBarLocation() {
+    if (!wx.chooseLocation) {
+      wx.showToast({ title: '当前环境不支持定位选点', icon: 'none' })
+      return
+    }
+    wx.chooseLocation({
+      success: (res) => {
+        this.setData({
+          'createForm.barName': res.name || this.data.createForm.barName,
+          'createForm.barAddress': res.address || res.name || this.data.createForm.barAddress,
+          'createForm.latitude': res.latitude || '',
+          'createForm.longitude': res.longitude || ''
+        })
+      },
+      fail: (error) => {
+        if (error && /cancel/i.test(error.errMsg || '')) {
+          return
+        }
+        wx.showToast({ title: '选点失败，请检查定位权限', icon: 'none' })
+      }
+    })
+  },
+
   async createParty() {
     const form = {
       ...this.data.createForm,
       title: this.data.createForm.title.trim(),
       tableNo: this.data.createForm.tableNo.trim(),
+      startsAt: this.data.createForm.startsAt.trim(),
       barName: this.data.createForm.barName.trim(),
       barAddress: this.data.createForm.barAddress.trim(),
+      latitude: this.data.createForm.latitude,
+      longitude: this.data.createForm.longitude,
       capacity: Number(this.data.createForm.capacity || 0)
     }
-    if (!form.title || !form.tableNo || !form.barAddress) {
-      wx.showToast({ title: '请补全局名、桌号和地址', icon: 'none' })
+    if (!form.title || !form.tableNo || !form.startsAt || !form.barAddress) {
+      wx.showToast({ title: '请补全局名、桌号、时间和地址', icon: 'none' })
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(form.startsAt)) {
+      wx.showToast({ title: '时间格式如 2026-06-02 21:00', icon: 'none' })
+      return
+    }
+    if (!form.latitude || !form.longitude) {
+      wx.showToast({ title: '请点“地图选点”确认位置', icon: 'none' })
       return
     }
     if (!form.capacity || form.capacity < 1 || form.capacity > 99) {
@@ -339,7 +399,8 @@ Page({
         tables,
         filter: 'all',
         selectedId: tables[0] ? tables[0].id : '',
-        selectedTable: tables[0] || null
+        selectedTable: tables[0] || null,
+        selectedEndedPartyIds: []
       })
       this.recalculate(tables)
       this.setTransientCopy('party_created')
@@ -348,6 +409,100 @@ Page({
     } finally {
       this.setData({ creatingParty: false })
     }
+  },
+
+  endCurrentParty() {
+    const partyId = this.data.currentParty && this.data.currentParty.id || this.data.partyId
+    if (!partyId || this.data.endingParty) {
+      return
+    }
+    wx.showModal({
+      title: '解散当前局',
+      content: '解散后用户不能再入局或继续聊天，该局会进入已结束列表，可再批量删除。',
+      confirmText: '解散',
+      confirmColor: '#d93025',
+      success: async (res) => {
+        if (!res.confirm) {
+          return
+        }
+        this.setData({ endingParty: true })
+        try {
+          const result = await api.endAdminParty(partyId, this.data.adminId, this.data.adminKey)
+          const tables = result.tables && result.tables.length ? result.tables : this.data.tables.map((table) => ({
+            ...table,
+            status: 'ended',
+            statusText: '已结束'
+          }))
+          this.setData({
+            tables,
+            currentParty: result.party || {
+              ...this.data.currentParty,
+              id: partyId,
+              status: 'ended'
+            }
+          })
+          this.updateSelected(this.data.selectedId)
+          this.recalculate(tables)
+          wx.showToast({ title: '已解散', icon: 'success' })
+        } catch (error) {
+          wx.showToast({ title: error.message || '解散失败', icon: 'none' })
+        } finally {
+          this.setData({ endingParty: false })
+        }
+      }
+    })
+  },
+
+  toggleEndedParty(event) {
+    const partyId = event.currentTarget.dataset.partyId
+    if (!partyId) {
+      return
+    }
+    const selected = new Set(this.data.selectedEndedPartyIds)
+    if (selected.has(partyId)) {
+      selected.delete(partyId)
+    } else {
+      selected.add(partyId)
+    }
+    this.setData({ selectedEndedPartyIds: Array.from(selected) })
+    this.recalculate(this.data.tables)
+  },
+
+  deleteSelectedEndedParties() {
+    const partyIds = this.data.selectedEndedPartyIds
+    if (!partyIds.length || this.data.deletingParties) {
+      wx.showToast({ title: '请选择已结束的局', icon: 'none' })
+      return
+    }
+    wx.showModal({
+      title: `删除 ${partyIds.length} 个已结束局`,
+      content: '删除后会清理对应成员、消息、举报和桌台记录，无法恢复。',
+      confirmText: '删除',
+      confirmColor: '#d93025',
+      success: async (res) => {
+        if (!res.confirm) {
+          return
+        }
+        this.setData({ deletingParties: true })
+        try {
+          await api.deleteEndedParties(partyIds, this.data.adminId, this.data.adminKey)
+          const deleted = new Set(partyIds)
+          const tables = this.data.tables.filter((table) => !deleted.has(table.partyId || this.data.partyId))
+          this.setData({
+            tables,
+            selectedEndedPartyIds: [],
+            selectedId: tables[0] ? tables[0].id : '',
+            selectedTable: tables[0] || null
+          })
+          this.recalculate(tables)
+          wx.showToast({ title: '已删除', icon: 'success' })
+        } catch (error) {
+          wx.showToast({ title: error.message || '删除失败', icon: 'none' })
+        } finally {
+          this.setData({ deletingParties: false })
+        }
+      }
+    })
   },
 
   selectTable(event) {
@@ -378,10 +533,16 @@ Page({
       return
     }
     api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then((invite) => {
-      const text = invite.urlLink || `${invite.path}?${invite.query}`
-      this.copyText(text, '入局链接已复制')
-    }).catch(() => {
-      this.copyText(table.joinLink, '入局链接已复制')
+      if (!invite.urlLink) {
+        wx.showToast({ title: '入局链接暂未生成', icon: 'none' })
+        return
+      }
+      this.copyText(invite.urlLink, '入局链接已复制')
+    }).catch((error) => {
+      const message = error && error.message === '管理员密钥无效'
+        ? '管理员未授权，请带 adminKey 进入'
+        : '入局链接生成失败'
+      wx.showToast({ title: message, icon: 'none' })
     })
   },
 
@@ -642,32 +803,96 @@ Page({
 
   showJoinInfo() {
     const table = this.data.selectedTable
-    api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then((invite) => {
-      const link = invite.urlLink || `${invite.path}?${invite.query}`
-      wx.showModal({
-        title: `${table.tableNo} 入局信息`,
-        content: `入局码：${invite.scene}\n链接：${link}\n小程序码：${invite.qrcodeUrl || '请配置微信密钥后生成'}`,
-        confirmText: '复制链接',
-        cancelText: '知道了',
-        success: (res) => {
-          if (res.confirm) {
-            this.copyText(link, '入局链接已复制')
-          }
-        }
-      })
-    }).catch(() => {
-      wx.showModal({
-        title: `${table.tableNo} 入局信息`,
-        content: `入局码：${table.joinCode}\n链接：${table.joinLink}`,
-        confirmText: '复制链接',
-        cancelText: '知道了',
-        success: (res) => {
-          if (res.confirm) {
-            this.copyJoinLink()
-          }
-        }
-      })
+    if (!table) {
+      return
+    }
+    this.setData({
+      invitePanelVisible: true,
+      inviteLoading: true,
+      inviteInfo: {
+        tableNo: table.tableNo,
+        scene: table.joinCode,
+        link: '',
+        qrcodePath: '',
+        error: ''
+      }
     })
+    api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then(async (invite) => {
+      const link = invite.urlLink || ''
+      let qrcodePath = ''
+      try {
+        qrcodePath = await api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey)
+      } catch (error) {
+        console.warn('小程序码下载失败', error)
+      }
+      this.setData({
+        inviteInfo: {
+          tableNo: table.tableNo,
+          scene: invite.scene,
+          link,
+          qrcodePath,
+          error: qrcodePath || link ? '' : '小程序码和链接暂未生成，请检查微信密钥和发布状态'
+        }
+      })
+    }).catch((error) => {
+      this.setData({
+        inviteInfo: {
+          tableNo: table.tableNo,
+          scene: table.joinCode,
+          link: '',
+          qrcodePath: '',
+          error: error && error.message === '管理员密钥无效'
+            ? '管理员未授权，请带 adminKey 进入后再分享'
+            : '入局信息加载失败，请稍后重试'
+        }
+      })
+    }).finally(() => {
+      this.setData({ inviteLoading: false })
+    })
+  },
+
+  closeInvitePanel() {
+    this.setData({ invitePanelVisible: false })
+  },
+
+  copyInviteLink() {
+    const info = this.data.inviteInfo || {}
+    if (!info.link) {
+      wx.showToast({ title: '暂无可复制链接', icon: 'none' })
+      return
+    }
+    this.copyText(info.link, '入局链接已复制')
+  },
+
+  saveInviteQrcode() {
+    const info = this.data.inviteInfo || {}
+    if (!info.qrcodePath) {
+      wx.showToast({ title: '暂无小程序码', icon: 'none' })
+      return
+    }
+    if (!wx.saveImageToPhotosAlbum) {
+      wx.showToast({ title: '当前环境不支持保存', icon: 'none' })
+      return
+    }
+    wx.saveImageToPhotosAlbum({
+      filePath: info.qrcodePath,
+      success: () => wx.showToast({ title: '小程序码已保存', icon: 'success' }),
+      fail: () => wx.showToast({ title: '保存失败，请检查相册权限', icon: 'none' })
+    })
+  },
+
+  previewInviteQrcode() {
+    const info = this.data.inviteInfo || {}
+    if (!info.qrcodePath || !wx.previewImage) {
+      return
+    }
+    wx.previewImage({
+      urls: [info.qrcodePath],
+      current: info.qrcodePath
+    })
+  },
+
+  noop() {
   },
 
   refreshData() {
@@ -693,7 +918,31 @@ Page({
   recalculate(tables) {
     const sourceTables = tables || this.data.tables
     const visibleTables = this.filterTables(sourceTables, this.data.filter)
+    const endedTableMap = new Map()
+    sourceTables.forEach((table) => {
+      if (table.status !== 'ended') {
+        return
+      }
+      const partyId = table.partyId || this.data.partyId
+      if (!endedTableMap.has(partyId)) {
+        endedTableMap.set(partyId, {
+          ...table,
+          partyId
+        })
+      }
+    })
+    const endedTables = Array.from(endedTableMap.values())
+    const endedPartyIds = new Set(endedTables.map((table) => table.partyId))
+    const selectedEndedPartyIds = this.data.selectedEndedPartyIds.filter((partyId) => endedPartyIds.has(partyId))
+    const selectedSet = new Set(selectedEndedPartyIds)
+    const decoratedEndedTables = endedTables.map((table) => ({
+      ...table,
+      deleteSelected: selectedSet.has(table.partyId)
+    }))
     const stats = sourceTables.reduce((memo, table) => {
+      if (table.status === 'ended') {
+        return memo
+      }
       memo.onlineMembers += table.members.filter((member) => member.online).length
       memo.photoCount += table.photoCount
       if ((table.ghostCount || 0) > 0) {
@@ -704,6 +953,8 @@ Page({
 
     this.setData({
       visibleTables,
+      endedTables: decoratedEndedTables,
+      selectedEndedPartyIds,
       stats
     })
   },
@@ -711,6 +962,9 @@ Page({
   updateMemberStatus(memberId, seatStatus) {
     const seatStatusText = seatStatus === 'seated' ? '已占位' : '未占位'
     const tables = this.data.tables.map((table) => {
+      if (table.status === 'ended') {
+        return table
+      }
       const members = table.members.map((member) => {
         if (member.memberId === memberId) {
           return { ...member, seatStatus, seatStatusText }
@@ -765,6 +1019,9 @@ Page({
 
   removeMember(memberId) {
     const tables = this.data.tables.map((table) => {
+      if (table.status === 'ended') {
+        return table
+      }
       const members = table.members.filter((member) => member.memberId !== memberId)
       const removingHead = table.headMemberId === memberId
       const memberCount = members.filter((member) => member.seatStatus === 'seated').length
@@ -817,6 +1074,9 @@ Page({
     }
     if (filter === 'attention') {
       return tables.filter((table) => (table.ghostCount || 0) > 0)
+    }
+    if (filter === 'ended') {
+      return tables.filter((table) => table.status === 'ended')
     }
     return tables.filter((table) => table.status === filter)
   },

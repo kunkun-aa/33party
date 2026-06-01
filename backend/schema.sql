@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS party_tables (
   status TEXT NOT NULL DEFAULT 'open',
   share_scene TEXT NOT NULL UNIQUE,
   head_member_id TEXT REFERENCES party_members(id) ON DELETE SET NULL,
+  ended_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
   UNIQUE(party_id, table_no)
 );
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS messages (
   table_id TEXT NOT NULL REFERENCES party_tables(id),
   sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'admin')),
   sender_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('text', 'voice', 'photo', 'video', 'system', 'photo_burst')),
+  kind TEXT NOT NULL CHECK(kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'system', 'photo_burst')),
   text TEXT,
   media_url TEXT,
   duration_seconds INTEGER,

@@ -340,6 +340,9 @@ function normalizeReport(report = {}) {
 
 function buildQuoteSummary(quote = {}) {
   const type = quote.type || quote.kind;
+  if (type === "emoji") {
+    return "[表情]";
+  }
   if (type === "photo") {
     return "[图片]";
   }
@@ -404,13 +407,18 @@ function normalizeAdminTable(table = {}, party = {}) {
   const members = table.members || [];
   const status = table.status || "available";
   const headMember = table.head || members.find((member) => member.memberId === table.headMemberId) || null;
+  const isEnded = status === "ended";
 
   return {
     id: table.id,
+    partyId: table.partyId || table.party_id || party.id || "",
     tableNo: table.tableNo,
     title: table.title || party.title || "",
+    startsAt: table.startsAt || party.startsAt || "",
+    startsAtText: formatBeijingDateTime(table.startsAt || party.startsAt || ""),
+    endedAt: table.endedAt || table.ended_at || "",
     status,
-    statusText: table.statusText || (status === "full" ? "人数已满" : "人数未满"),
+    statusText: table.statusText || (isEnded ? "已结束" : status === "full" ? "人数已满" : "人数未满"),
     headMemberId: table.headMemberId || (headMember && headMember.memberId) || "",
     head: headMember ? (headMember.nickname || headMember.name) : "未指定",
     memberCount: table.memberCount || members.length || 0,
@@ -424,7 +432,7 @@ function normalizeAdminTable(table = {}, party = {}) {
     updatedAt: recentMessage.createdAt ? formatBeijingDateTime(recentMessage.createdAt) : "刚刚",
     joinCode: table.shareScene,
     joinLink: `33party://join?scene=${table.shareScene}`,
-    note: table.openSeats > 0 ? `还有 ${table.openSeats} 个空位` : "已满员，留意现场秩序",
+    note: isEnded ? "已结束，可删除归档" : table.openSeats > 0 ? `还有 ${table.openSeats} 个空位` : "已满员，留意现场秩序",
     members: members.map((member) => ({
       id: member.id,
       memberId: member.memberId,
@@ -520,6 +528,30 @@ function getTableInvite(tableId, adminId = "admin_mimei", adminKey = "") {
   });
 }
 
+function downloadTableQrcode(tableId, adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl || !wx.downloadFile) {
+    return Promise.resolve("");
+  }
+  const url = buildUrl("/api/admin/tables/qrcode", {
+    tableId,
+    adminId
+  });
+  return new Promise((resolve, reject) => {
+    wx.downloadFile({
+      url,
+      header: adminHeader(adminKey),
+      success(res) {
+        if (res.statusCode >= 200 && res.statusCode < 300 && res.tempFilePath) {
+          resolve(res.tempFilePath);
+          return;
+        }
+        reject(new Error(`Qrcode download failed: ${res.statusCode}`));
+      },
+      fail: reject
+    });
+  });
+}
+
 function updateAdminProfile(profile) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({
@@ -557,10 +589,13 @@ function createAdminParty(form) {
       party: {
         id: `local_party_${Date.now()}`,
         title: form.title,
+        startsAt: form.startsAt,
         admin: { id: form.adminId || "admin_mimei", displayName: "管理员" },
         bar: {
           name: form.barName || "33 Party Lounge",
-          address: form.barAddress || ""
+          address: form.barAddress || "",
+          latitude: form.latitude || 0,
+          longitude: form.longitude || 0
         }
       },
       tables: [normalizeAdminTable({
@@ -591,6 +626,7 @@ function createAdminParty(form) {
       capacity: Number(form.capacity || 8),
       barName: form.barName,
       barAddress: form.barAddress,
+      startsAt: form.startsAt,
       latitude: form.latitude,
       longitude: form.longitude
     }
@@ -598,6 +634,37 @@ function createAdminParty(form) {
     party: res.party,
     tables: (res.tables || []).map((table) => normalizeAdminTable(table, res.party))
   }));
+}
+
+function endAdminParty(partyId, adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ ok: true, party: { id: partyId, status: "ended" }, tables: [] });
+  }
+  return request("/api/admin/parties/end", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      partyId,
+      adminId
+    }
+  }).then((res) => ({
+    party: res.party,
+    tables: (res.tables || []).map((table) => normalizeAdminTable(table, res.party))
+  }));
+}
+
+function deleteEndedParties(partyIds = [], adminId = "admin_mimei", adminKey = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve({ ok: true, deletedPartyIds: partyIds });
+  }
+  return request("/api/admin/parties/delete", {
+    method: "POST",
+    header: adminHeader(adminKey),
+    data: {
+      partyIds,
+      adminId
+    }
+  });
 }
 
 function setTableHead(tableId, memberId = "", adminKey = "") {
@@ -901,8 +968,11 @@ module.exports = {
   bindAdminOpenid,
   userLogin,
   getTableInvite,
+  downloadTableQrcode,
   updateAdminProfile,
   createAdminParty,
+  endAdminParty,
+  deleteEndedParties,
   setTableHead,
   joinParty,
   updateUserProfile,

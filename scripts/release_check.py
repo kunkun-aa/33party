@@ -33,12 +33,20 @@ def check_static_files() -> None:
 
     room_js = (ROOT / "frontend" / "pages" / "room" / "index.js").read_text(encoding="utf-8")
     api_js = (ROOT / "frontend" / "services" / "api.js").read_text(encoding="utf-8")
+    admin_js = (ROOT / "frontend" / "pages" / "admin" / "index.js").read_text(encoding="utf-8")
     app_js = (ROOT / "app.js").read_text(encoding="utf-8")
     config_js = (ROOT / "config.js").read_text(encoding="utf-8")
     assert_true("wx.requestSubscribeMessage" in room_js, "room page should request subscribe message permission")
     assert_true("connectRoomSocket" in room_js, "room page should connect websocket")
     assert_true("agreementAccepted" in room_js and "submitReport" in room_js, "room page should require agreement and support reports")
     assert_true("mediaPreview" in room_js and "wx.previewImage" not in room_js, "room page should use custom zoomable media preview")
+    assert_true("onChooseEmoji" in room_js and "wx.chooseMessageFile" in room_js, "room page should send WeChat-selected emoji images")
+    assert_true("wx.chooseLocation" in admin_js, "admin create party should choose map location")
+    assert_true("endCurrentParty" in admin_js and "deleteSelectedEndedParties" in admin_js, "admin page should end and delete ended parties")
+    assert_true(
+        admin_js.find("const selectedSet = new Set(selectedEndedPartyIds)") < admin_js.find("const decoratedEndedTables"),
+        "admin ended party selection should compute selected set before rendering rows",
+    )
     assert_true("/api/messages/subscribe" in api_js, "api service should save message subscriptions")
     assert_true("/api/reports" in api_js, "api service should submit reports")
     assert_true("/api/admin/users/ban" in api_js, "api service should expose admin ban API")
@@ -347,6 +355,17 @@ def run() -> int:
             with urlopen(f"http://127.0.0.1:{PORT}{uploaded_path}", timeout=5) as response:
                 assert_true(response.status == 200 and response.read() == b"release-image-bytes", "uploaded file should be served")
 
+            status, body = post_multipart_file(
+                "/api/uploads",
+                {"mediaType": "emoji"},
+                "file",
+                "release.gif",
+                "image/gif",
+                b"release-emoji-bytes",
+            )
+            assert_true(status == 201 and body.get("ok") is True, "upload API should accept emoji image")
+            emoji_path = body["mediaUrl"].split(f"http://127.0.0.1:{PORT}", 1)[1]
+
             status, body = post_json(
                 "/api/photo-burst",
                 {
@@ -362,6 +381,20 @@ def run() -> int:
             assert_true(status == 201 and body.get("ok") is True, "photo burst API should create flash photo")
             assert_true(body["message"]["kind"] == "photo" and body["message"]["isFlash"] is True, "photo burst should be normalized as flash photo")
             assert_true(bool(body["message"]["flashExpiresAt"]), "flash photo should have expiry")
+
+            status, body = post_json(
+                "/api/messages",
+                {
+                    "partyId": "party_demo",
+                    "tableId": "table_a01",
+                    "senderType": "user",
+                    "senderId": "user_demo_1",
+                    "kind": "emoji",
+                    "text": "[表情]",
+                    "mediaUrl": emoji_path,
+                },
+            )
+            assert_true(status == 201 and body["message"]["kind"] == "emoji", "message API should create emoji messages")
 
             sock = connect_room_socket()
             try:
@@ -600,13 +633,37 @@ def run() -> int:
                     "title": "Release Test Party",
                     "tableNo": "R01",
                     "capacity": 6,
+                    "startsAt": "2026-06-02 21:00",
                     "barName": "Release Lounge",
                     "barAddress": "Release Address",
+                    "latitude": 22.543096,
+                    "longitude": 114.057865,
                 },
                 headers=admin_headers,
             )
             assert_true(status == 201 and body.get("ok") is True, "admin should create party")
             assert_true(body["tables"][0]["capacity"] == 6, "created table capacity should match")
+            created_party_id = body["party"]["id"]
+            created_table_id = body["tables"][0]["id"]
+            assert_true(body["party"]["startsAt"] == "2026-06-02 21:00:00", "created party should persist start time")
+            assert_true(body["party"]["bar"]["latitude"] == 22.543096, "created party should persist map latitude")
+
+            status, body = post_json(
+                "/api/admin/parties/end",
+                {"adminId": "admin_mimei", "partyId": created_party_id},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and body["party"]["status"] == "ended", "admin should end party")
+
+            status, body = request_json(f"/api/room?partyId={created_party_id}&tableId={created_table_id}")
+            assert_true(status == 410 and body.get("ok") is False, "ended party room should be unavailable")
+
+            status, body = post_json(
+                "/api/admin/parties/delete",
+                {"adminId": "admin_mimei", "partyIds": [created_party_id]},
+                headers=admin_headers,
+            )
+            assert_true(status == 200 and created_party_id in body["deletedPartyIds"], "admin should delete ended parties")
 
             status, body = post_json("/api/admin/members/kick", {"memberId": release_member_id}, headers=admin_headers)
             assert_true(status == 200 and body.get("ok") is True, "admin should kick member")

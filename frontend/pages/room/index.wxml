@@ -133,6 +133,11 @@
                 </view>
               </view>
 
+              <view wx:elif="{{item.type === 'emoji'}}" class="emoji-message" data-id="{{item.id}}" bindtap="previewMedia">
+                <image wx:if="{{item.image}}" class="emoji-shot" src="{{item.image}}" mode="aspectFit"></image>
+                <view wx:else class="emoji-placeholder">表情暂不可见</view>
+              </view>
+
               <view wx:elif="{{item.type === 'video'}}" class="photo-message video-message" data-id="{{item.id}}" bindtap="previewMedia">
                 <video class="video-shot" src="{{item.video}}" controls show-fullscreen-btn show-play-btn object-fit="cover"></video>
               </view>
@@ -198,6 +203,7 @@
       </view>
       <view class="composer-row" wx:if="{{canChat}}">
         <input class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
+        <view class="composer-tool emoji-tool" bindtap="onChooseEmoji">表情</view>
         <view class="composer-tool voice-tool {{voiceRecording ? 'recording' : ''}}" bindlongpress="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd">语音</view>
         <view class="composer-tool photo-tool" bindtap="onChoosePhoto">照片</view>
         <view class="composer-tool send-button" bindtap="onSendText">{{sending ? '...' : '发送'}}</view>

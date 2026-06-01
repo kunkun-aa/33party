@@ -10,6 +10,11 @@
     "backgroundColor": "#0b0d12",
     "backgroundTextStyle": "light"
   },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于管理员创建局时确认酒吧坐标，以及用户在房间内打开地图导航到现场地址"
+    }
+  },
   "style": "v2",
   "sitemapLocation": "sitemap.json"
 }

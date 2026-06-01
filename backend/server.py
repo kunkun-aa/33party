@@ -13,6 +13,7 @@ import uuid
 import cgi
 import secrets
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -138,6 +139,28 @@ ROOM_WS_HUB = RoomWebSocketHub()
 
 def now_sql() -> str:
     return "datetime('now', '+8 hours')"
+
+
+def conn_now_text() -> str:
+    return datetime.utcfromtimestamp(time.time() + 8 * 60 * 60).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def normalize_datetime_text(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace("T", " ").replace("/", "-")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1]
+    normalized = normalized.split(".")[0]
+    if len(normalized) == 16:
+        normalized = f"{normalized}:00"
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(normalized, pattern).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    raise ApiError(400, "开始时间格式应为 YYYY-MM-DD HH:mm")
 
 
 def new_id(prefix: str) -> str:
@@ -318,6 +341,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "users", "ban_reason", "TEXT")
     add_column_if_missing(conn, "party_members", "seat_status", "TEXT NOT NULL DEFAULT 'ghost'")
     add_column_if_missing(conn, "party_tables", "head_member_id", "TEXT REFERENCES party_members(id) ON DELETE SET NULL")
+    add_column_if_missing(conn, "party_tables", "ended_at", "TEXT")
     add_column_if_missing(conn, "messages", "like_count", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "is_flash", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "flash_expires_at", "TEXT")
@@ -330,10 +354,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "messages", "deleted_at", "TEXT")
     add_column_if_missing(conn, "messages", "deleted_by", "TEXT")
     add_column_if_missing(conn, "messages", "delete_reason", "TEXT")
-    migrate_messages_video_kind(conn)
-    add_column_if_missing(conn, "messages", "deleted_at", "TEXT")
-    add_column_if_missing(conn, "messages", "deleted_by", "TEXT")
-    add_column_if_missing(conn, "messages", "delete_reason", "TEXT")
+    migrate_messages_kind_constraints(conn)
     conn.execute("UPDATE users SET gender = 'female' WHERE id = 'user_demo_1' AND gender = 'unknown'")
     conn.execute("UPDATE users SET gender = 'male' WHERE id = 'user_demo_2' AND gender = 'unknown'")
     conn.execute("UPDATE users SET agreement_accepted_at = COALESCE(agreement_accepted_at, datetime('now', '+8 hours')) WHERE id LIKE 'user_demo_%'")
@@ -385,14 +406,21 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id)")
 
 
-def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
+def migrate_messages_kind_constraints(conn: sqlite3.Connection) -> None:
     table_sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
     ).fetchone()
-    if not table_sql or "'video'" in (table_sql["sql"] or ""):
+    if not table_sql:
         return
+    table_sql_text = table_sql["sql"] or ""
+    if "'video'" in table_sql_text and "'emoji'" in table_sql_text and "deleted_at" in table_sql_text:
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    deleted_at_expr = "deleted_at" if "deleted_at" in columns else "NULL"
+    deleted_by_expr = "deleted_by" if "deleted_by" in columns else "NULL"
+    delete_reason_expr = "delete_reason" if "delete_reason" in columns else "NULL"
     conn.executescript(
-        """
+        f"""
         ALTER TABLE messages RENAME TO messages_old;
         CREATE TABLE messages (
           id TEXT PRIMARY KEY,
@@ -400,7 +428,7 @@ def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
           table_id TEXT NOT NULL REFERENCES party_tables(id),
           sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'admin')),
           sender_id TEXT NOT NULL,
-          kind TEXT NOT NULL CHECK(kind IN ('text', 'voice', 'photo', 'video', 'system', 'photo_burst')),
+          kind TEXT NOT NULL CHECK(kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'system', 'photo_burst')),
           text TEXT,
           media_url TEXT,
           duration_seconds INTEGER,
@@ -413,16 +441,21 @@ def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
           like_count INTEGER NOT NULL DEFAULT 0,
           is_flash INTEGER NOT NULL DEFAULT 0,
           flash_expires_at TEXT,
+          deleted_at TEXT,
+          deleted_by TEXT,
+          delete_reason TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
         );
         INSERT INTO messages
           (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
            duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
-           quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at)
+           quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at,
+           deleted_at, deleted_by, delete_reason, created_at)
         SELECT
           id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
           duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
-          quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at
+          quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at,
+          {deleted_at_expr}, {deleted_by_expr}, {delete_reason_expr}, created_at
         FROM messages_old;
         DROP TABLE messages_old;
         CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(party_id, table_id, id);
@@ -456,7 +489,7 @@ def cleanup_expired_content() -> dict:
                 """
                 SELECT media_url, quote_media_url FROM messages
                 WHERE sender_type = 'user'
-                  AND kind IN ('text', 'voice', 'photo', 'video', 'photo_burst')
+                  AND kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
                   AND created_at < datetime('now', '+8 hours', ?)
                 """,
                 (f"-{MESSAGE_RETENTION_HOURS} hours",),
@@ -467,7 +500,7 @@ def cleanup_expired_content() -> dict:
                 """
                 DELETE FROM messages
                 WHERE sender_type = 'user'
-                  AND kind IN ('text', 'voice', 'photo', 'video', 'photo_burst')
+                  AND kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
                   AND created_at < datetime('now', '+8 hours', ?)
                 """,
                 (f"-{MESSAGE_RETENTION_HOURS} hours",),
@@ -704,11 +737,18 @@ class PartyHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "缺少 WebSocket Key")
         with connect() as conn:
             table = conn.execute(
-                "SELECT id FROM party_tables WHERE id = ? AND party_id = ?",
+                """
+                SELECT t.id, t.status AS table_status, p.status AS party_status
+                FROM party_tables t
+                JOIN parties p ON p.id = t.party_id
+                WHERE t.id = ? AND t.party_id = ?
+                """,
                 (table_id, party_id),
             ).fetchone()
             if not table:
                 raise ApiError(404, "桌台不存在")
+            if table["party_status"] == "ended" or table["table_status"] == "ended":
+                raise ApiError(410, "该局已结束")
             if user_id:
                 self.touch_member(conn, party_id, table_id, user_id)
         accept = base64.b64encode(hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()).decode("ascii")
@@ -830,6 +870,10 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.update_admin_profile(body))
             elif method == "POST" and path == "/api/admin/parties":
                 self.respond(self.create_admin_party(body), status=201)
+            elif method == "POST" and path == "/api/admin/parties/end":
+                self.respond(self.end_admin_party(body))
+            elif method == "POST" and path == "/api/admin/parties/delete":
+                self.respond(self.delete_ended_parties(body))
             elif method == "POST" and path == "/api/admin/members/seat":
                 self.respond(self.set_member_seat_status(body))
             elif method == "POST" and path == "/api/admin/tables/head":
@@ -955,6 +999,11 @@ class PartyHandler(BaseHTTPRequestHandler):
                     (party_id,),
                 ).fetchone()
                 table_id = first_table["id"] if first_table else None
+            party = conn.execute("SELECT status FROM parties WHERE id = ?", (party_id,)).fetchone()
+            if party and party["status"] == "ended":
+                raise ApiError(410, "该局已结束")
+            if table and table["status"] == "ended":
+                raise ApiError(410, "该桌已结束")
             return {"ok": True, "party": self.load_party(conn, party_id), "defaultTableId": table_id}
 
     def user_login(self, body: dict) -> dict:
@@ -1172,6 +1221,8 @@ class PartyHandler(BaseHTTPRequestHandler):
             party = conn.execute("SELECT * FROM parties WHERE id = ?", (party_id,)).fetchone()
             if not party:
                 raise ApiError(404, "主局不存在")
+            if party["status"] == "ended":
+                raise ApiError(410, "该局已结束")
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 raise ApiError(404, "用户不存在，请先完善资料")
@@ -1188,6 +1239,8 @@ class PartyHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not table:
                 raise ApiError(404, "桌台不存在")
+            if table["status"] == "ended":
+                raise ApiError(410, "该桌已结束")
 
             existing = conn.execute(
                 "SELECT id FROM party_members WHERE party_id = ? AND user_id = ?",
@@ -1226,6 +1279,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         table_id = require(query, "tableId")
         user_id = query.get("userId")
         with connect() as conn:
+            self.ensure_table_open(conn, party_id, table_id)
             if user_id:
                 self.touch_member(conn, party_id, table_id, user_id)
             return {"ok": True, "room": self.load_room(conn, party_id, table_id, user_id)}
@@ -1243,6 +1297,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             where += " AND id > ?"
             params.append(after_id)
         with connect() as conn:
+            self.ensure_table_open(conn, party_id, table_id)
             rows = conn.execute(
                 f"SELECT * FROM messages WHERE {where} ORDER BY created_at ASC, id ASC LIMIT 80",
                 params,
@@ -1255,10 +1310,11 @@ class PartyHandler(BaseHTTPRequestHandler):
         sender_type = body.get("senderType", "user")
         sender_id = require(body, "senderId")
         kind = body.get("kind", "text")
-        if kind not in {"text", "voice", "photo", "video", "system", "photo_burst"}:
+        if kind not in {"text", "voice", "photo", "video", "emoji", "system", "photo_burst"}:
             raise ApiError(400, "不支持的消息类型")
 
         with connect() as conn:
+            self.ensure_table_open(conn, party_id, table_id)
             self.ensure_sender(conn, sender_type, sender_id)
             if sender_type == "user":
                 user = conn.execute("SELECT * FROM users WHERE id = ?", (sender_id,)).fetchone()
@@ -1318,6 +1374,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             "voice": "发来一条语音消息",
             "photo": "发来一张照片",
             "video": "发来一段视频",
+            "emoji": "发来一个表情",
             "photo_burst": "发来一张照片",
         }.get(row["kind"], "有一条新消息")
         page = f"{MINIPROGRAM_ROOM_PAGE}?partyId={row['party_id']}&tableId={row['table_id']}"
@@ -1418,7 +1475,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         if not isinstance(file, dict) or not file.get("data"):
             raise ApiError(400, "缺少上传文件")
         media_type = body.get("mediaType") or body.get("type") or "file"
-        if media_type not in {"voice", "photo", "video", "avatar", "file"}:
+        if media_type not in {"voice", "photo", "video", "emoji", "avatar", "file"}:
             raise ApiError(400, "不支持的上传类型")
         data = file["data"]
         if len(data) > MAX_UPLOAD_BYTES:
@@ -1430,6 +1487,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         allowed_suffixes = {
             "voice": {".aac", ".amr", ".mp3", ".m4a", ".wav"},
             "photo": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"},
+            "emoji": {".jpg", ".jpeg", ".png", ".gif", ".webp"},
             "video": {".mp4", ".mov", ".m4v", ".avi"},
             "avatar": {".jpg", ".jpeg", ".png", ".webp", ".heic"},
             "file": {".aac", ".amr", ".mp3", ".m4a", ".wav", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".mp4", ".mov", ".m4v", ".avi"},
@@ -1827,6 +1885,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         title = require(body, "title").strip()
         table_no = (body.get("tableNo") or "A01").strip()
         capacity = int(body.get("capacity") or 8)
+        starts_at = normalize_datetime_text(body.get("startsAt")) or conn_now_text()
         bar_name = (body.get("barName") or "33 Party Lounge").strip()
         bar_address = require(body, "barAddress").strip()
         latitude = body.get("latitude")
@@ -1859,9 +1918,9 @@ class PartyHandler(BaseHTTPRequestHandler):
             conn.execute(
                 """
                 INSERT INTO parties (id, bar_id, admin_id, title, scene_code, starts_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now', '+8 hours'))
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (party_id, bar_id, admin_id, title, scene_code),
+                (party_id, bar_id, admin_id, title, scene_code, starts_at),
             )
             conn.execute(
                 """
@@ -1873,6 +1932,78 @@ class PartyHandler(BaseHTTPRequestHandler):
             party = self.load_party(conn, party_id)
             table = conn.execute("SELECT * FROM party_tables WHERE id = ?", (table_id,)).fetchone()
             return {"ok": True, "party": party, "tables": [self.load_table_summary(conn, table)]}
+
+    def end_admin_party(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        admin_id = body.get("adminId", "admin_mimei")
+        party_id = require(body, "partyId")
+        ended_channels: list[str] = []
+        with connect() as conn:
+            self.ensure_admin_party(conn, party_id, admin_id)
+            table_rows = conn.execute("SELECT id FROM party_tables WHERE party_id = ?", (party_id,)).fetchall()
+            ended_channels = [room_channel_key(party_id, row["id"]) for row in table_rows]
+            conn.execute(
+                """
+                UPDATE parties
+                SET status = 'ended'
+                WHERE id = ?
+                """,
+                (party_id,),
+            )
+            conn.execute(
+                """
+                UPDATE party_tables
+                SET status = 'ended', ended_at = COALESCE(ended_at, datetime('now', '+8 hours'))
+                WHERE party_id = ?
+                """,
+                (party_id,),
+            )
+            party = self.load_party(conn, party_id)
+            tables = [self.load_table_summary(conn, row) for row in conn.execute(
+                "SELECT * FROM party_tables WHERE party_id = ? ORDER BY table_no",
+                (party_id,),
+            ).fetchall()]
+        for channel_key in ended_channels:
+            ROOM_WS_HUB.broadcast(channel_key, {
+                "type": "party.ended",
+                "partyId": party_id,
+            })
+        return {"ok": True, "party": party, "tables": tables}
+
+    def delete_ended_parties(self, body: dict) -> dict:
+        self.require_admin_request(body)
+        admin_id = body.get("adminId", "admin_mimei")
+        party_ids = body.get("partyIds") or []
+        if isinstance(party_ids, str):
+            party_ids = [party_ids]
+        party_ids = [str(party_id) for party_id in party_ids if party_id]
+        if not party_ids:
+            raise ApiError(400, "请选择要删除的局")
+        deleted: list[str] = []
+        with connect() as conn:
+            for party_id in party_ids:
+                self.ensure_admin_party(conn, party_id, admin_id)
+                party = conn.execute("SELECT status FROM parties WHERE id = ?", (party_id,)).fetchone()
+                if not party:
+                    raise ApiError(404, "主局不存在")
+                if party["status"] != "ended":
+                    raise ApiError(400, "只能删除已结束的局")
+            for party_id in party_ids:
+                table_ids = [row["id"] for row in conn.execute(
+                    "SELECT id FROM party_tables WHERE party_id = ?",
+                    (party_id,),
+                ).fetchall()]
+                if table_ids:
+                    placeholders = ",".join("?" for _ in table_ids)
+                    conn.execute(f"DELETE FROM message_subscriptions WHERE table_id IN ({placeholders})", table_ids)
+                    conn.execute(f"DELETE FROM reports WHERE table_id IN ({placeholders})", table_ids)
+                    conn.execute(f"DELETE FROM messages WHERE table_id IN ({placeholders})", table_ids)
+                    conn.execute(f"DELETE FROM party_members WHERE table_id IN ({placeholders})", table_ids)
+                    conn.execute(f"DELETE FROM party_tables WHERE id IN ({placeholders})", table_ids)
+                conn.execute("DELETE FROM contact_requests WHERE party_id = ?", (party_id,))
+                conn.execute("DELETE FROM parties WHERE id = ?", (party_id,))
+                deleted.append(party_id)
+        return {"ok": True, "deletedPartyIds": deleted}
 
     def set_member_seat_status(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2182,6 +2313,21 @@ class PartyHandler(BaseHTTPRequestHandler):
         if member["seat_status"] != "seated":
             raise ApiError(403, "未占位成员暂不能发言")
 
+    def ensure_table_open(self, conn: sqlite3.Connection, party_id: str, table_id: str) -> None:
+        row = conn.execute(
+            """
+            SELECT p.status AS party_status, t.status AS table_status
+            FROM party_tables t
+            JOIN parties p ON p.id = t.party_id
+            WHERE p.id = ? AND t.id = ?
+            """,
+            (party_id, table_id),
+        ).fetchone()
+        if not row:
+            raise ApiError(404, "桌台不存在")
+        if row["party_status"] == "ended" or row["table_status"] == "ended":
+            raise ApiError(410, "该局已结束")
+
     def touch_member(self, conn: sqlite3.Connection, party_id: str, table_id: str, user_id: str) -> None:
         conn.execute(
             """
@@ -2297,15 +2443,17 @@ def is_recently_seen(value: str | None) -> bool:
 
 def table_summary(row: sqlite3.Row, seated_count: int, total_count: int) -> dict:
     open_seats = max(row["capacity"] - seated_count, 0)
+    is_ended = row["status"] == "ended"
     return {
         "id": row["id"],
         "partyId": row["party_id"],
         "tableNo": row["table_no"],
         "capacity": row["capacity"],
-        "status": "full" if open_seats == 0 else "available",
-        "statusText": "人数已满" if open_seats == 0 else "人数未满",
+        "status": "ended" if is_ended else ("full" if open_seats == 0 else "available"),
+        "statusText": "已结束" if is_ended else ("人数已满" if open_seats == 0 else "人数未满"),
         "shareScene": row["share_scene"],
         "headMemberId": row["head_member_id"] if "head_member_id" in row.keys() else None,
+        "endedAt": row["ended_at"] if "ended_at" in row.keys() else None,
         "memberCount": seated_count,
         "totalMemberCount": total_count,
         "ghostCount": max(total_count - seated_count, 0),

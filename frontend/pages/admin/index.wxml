@@ -40,6 +40,7 @@
     <van-button custom-class="filter-tab {{filter === 'available' ? 'active' : ''}}" custom-style="{{filter === 'available' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="available" dataset="available" bind:click="setFilter">人数未满</van-button>
     <van-button custom-class="filter-tab {{filter === 'full' ? 'active' : ''}}" custom-style="{{filter === 'full' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="full" dataset="full" bind:click="setFilter">人数已满</van-button>
     <van-button custom-class="filter-tab {{filter === 'attention' ? 'active' : ''}}" custom-style="{{filter === 'attention' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="attention" dataset="attention" bind:click="setFilter">需关注</van-button>
+    <van-button custom-class="filter-tab {{filter === 'ended' ? 'active' : ''}}" custom-style="{{filter === 'ended' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="ended" dataset="ended" bind:click="setFilter">已结束</van-button>
   </view>
 
   <view class="ops-panel">
@@ -82,12 +83,20 @@
           </view>
         </view>
         <view class="form-item">
+          <text class="field-label">开局时间</text>
+          <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="startsAt" value="{{createForm.startsAt}}" bind:input="onCreateFormInput" placeholder="2026-06-02 21:00" border="{{false}}" />
+        </view>
+        <view class="form-item">
           <text class="field-label">酒吧名称</text>
           <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="barName" value="{{createForm.barName}}" bind:input="onCreateFormInput" placeholder="例：33 Party Lounge" border="{{false}}" />
         </view>
         <view class="form-item">
-          <text class="field-label">详细地址</text>
+          <view class="field-title-row">
+            <text class="field-label">详细地址</text>
+            <button class="mini-action location-action" bindtap="chooseBarLocation">地图选点</button>
+          </view>
           <van-field custom-class="ops-input full" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="barAddress" value="{{createForm.barAddress}}" bind:input="onCreateFormInput" placeholder="街道 / 商圈 / 门店地址" border="{{false}}" />
+          <text class="location-state">{{createForm.latitude && createForm.longitude ? '已确认地图坐标' : '用户端地图需要先确认坐标'}}</text>
         </view>
       </view>
     </view>
@@ -159,6 +168,31 @@
     <view class="report-empty" wx:else>{{reportLoading ? '正在加载举报记录' : '暂无该状态举报'}}</view>
   </view>
 
+  <view class="ended-panel" wx:if="{{endedTables.length}}">
+    <view class="reports-head">
+      <view>
+        <text class="muted">已结束局</text>
+        <text class="ops-title">多选删除</text>
+      </view>
+      <button class="mini-action danger" bindtap="deleteSelectedEndedParties">{{deletingParties ? '删除中' : '删除选中'}}</button>
+    </view>
+    <view class="ended-list">
+      <view
+        wx:for="{{endedTables}}"
+        wx:key="partyId"
+        class="ended-row {{item.deleteSelected ? 'selected' : ''}}"
+        data-party-id="{{item.partyId}}"
+        bindtap="toggleEndedParty"
+      >
+        <view class="ended-check">{{item.deleteSelected ? '✓' : ''}}</view>
+        <view class="ended-copy">
+          <text class="ended-title">{{item.title || currentParty.title || createForm.title}}</text>
+          <text class="ended-meta">{{item.tableNo}} · {{item.startsAtText || '未设置时间'}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
   <view class="content-grid">
     <view class="table-list">
       <block wx:for="{{visibleTables}}" wx:key="id">
@@ -218,7 +252,10 @@
           <text class="detail-kicker">{{selectedTable.tableNo}}</text>
           <view class="detail-title">{{selectedTable.title || currentParty.title || createForm.title}}</view>
         </view>
-        <van-tag custom-class="status-pill {{selectedTable.status}}" round>{{selectedTable.memberCount}}/{{selectedTable.capacity}}</van-tag>
+        <view class="detail-actions">
+          <van-tag custom-class="status-pill {{selectedTable.status}}" round>{{selectedTable.memberCount}}/{{selectedTable.capacity}}</van-tag>
+          <button wx:if="{{selectedTable.status !== 'ended'}}" class="mini-action danger detail-danger" bindtap="endCurrentParty">{{endingParty ? '处理中' : '解散'}}</button>
+        </view>
       </view>
 
       <view class="seat-summary">
@@ -256,13 +293,6 @@
         </view>
         <van-button custom-class="detail-button {{copiedText === adminProfile.wechatId ? 'copied' : ''}}" custom-style="width: 92rpx; height: 42rpx; padding: 0; color: #d7fb52; font-size: 19rpx; font-weight: 900; line-height: 42rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" bind:click="copyAdminWechat">
           {{copiedText === adminProfile.wechatId ? '已复制' : '复制'}}
-        </van-button>
-      </view>
-
-      <view class="link-row">
-        <text class="link-text">{{selectedTable.joinLink}}</text>
-        <van-button custom-class="detail-button {{copiedText === selectedTable.joinLink ? 'copied' : ''}}" custom-style="width: 92rpx; height: 42rpx; padding: 0; color: #d7fb52; font-size: 19rpx; font-weight: 900; line-height: 42rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" bind:click="copyJoinLink">
-          {{copiedText === selectedTable.joinLink ? '已复制' : '复制'}}
         </van-button>
       </view>
 
@@ -305,6 +335,37 @@
             </view>
           </view>
         </block>
+      </view>
+    </view>
+  </view>
+
+  <view class="invite-mask" wx:if="{{invitePanelVisible}}" catchtap="closeInvitePanel">
+    <view class="invite-panel" catchtap="noop">
+      <view class="invite-head">
+        <view>
+          <text class="muted">入局分享</text>
+          <view class="invite-title">{{inviteInfo.tableNo}} 入局信息</view>
+        </view>
+        <view class="invite-close" bindtap="closeInvitePanel">×</view>
+      </view>
+
+      <view class="invite-code-card">
+        <view class="invite-qrcode-box">
+          <image wx:if="{{inviteInfo.qrcodePath}}" class="invite-qrcode" src="{{inviteInfo.qrcodePath}}" mode="aspectFit" bindtap="previewInviteQrcode"></image>
+          <view wx:elif="{{inviteLoading}}" class="invite-qrcode-placeholder">生成中</view>
+          <view wx:else class="invite-qrcode-placeholder">暂无小程序码</view>
+        </view>
+        <text class="invite-scene">{{inviteInfo.scene}}</text>
+        <text class="invite-error" wx:if="{{inviteInfo.error}}">{{inviteInfo.error}}</text>
+      </view>
+
+      <view class="invite-link-box" wx:if="{{inviteInfo.link}}">
+        <text>{{inviteInfo.link}}</text>
+      </view>
+
+      <view class="invite-actions">
+        <button class="invite-action secondary" bindtap="copyInviteLink">复制链接</button>
+        <button class="invite-action" bindtap="saveInviteQrcode">保存小程序码</button>
       </view>
     </view>
   </view>
