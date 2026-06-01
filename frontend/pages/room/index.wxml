@@ -80,7 +80,8 @@
         <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
           <view class="member-card" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
             <view class="avatar-wrap" data-url="{{item.avatar}}" bindtap="previewAvatar">
-              <image class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
+              <image wx:if="{{item.avatar}}" class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
+              <view wx:else class="member-avatar avatar-fallback">{{item.avatarText}}</view>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
             </view>
             <text class="member-name">{{item.name}}</text>
@@ -95,7 +96,8 @@
         </view>
         <view class="message-list">
           <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindlongpress="onQuoteMessage">
-            <image class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" bindtap="previewAvatar"></image>
+            <image wx:if="{{item.avatar}}" class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" bindtap="previewAvatar"></image>
+            <view wx:else class="message-avatar avatar-fallback">{{item.avatarText}}</view>
             <view class="message-body">
               <view class="message-meta">
                 <text class="message-name">{{item.sender}}</text>
@@ -242,7 +244,7 @@
             <text>，并确认本人已满 18 周岁</text>
           </view>
         </view>
-        <button class="profile-submit" bindtap="onSaveProfile">进入主局</button>
+        <button class="profile-submit" bindtap="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">进入主局</button>
       </view>
     </view>
   </block>

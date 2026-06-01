@@ -249,6 +249,37 @@ def run() -> int:
             assert_true(status == 201 and body["user"]["id"] == release_user_id, "profile API should update cached user id without duplicate insert")
 
             status, body = post_json(
+                "/api/users/profile",
+                {
+                    "openid": "release_openid_2",
+                    "nickname": "Release 用户二号",
+                    "avatarUrl": "https://dummyimage.com/160x160/102826/f6e7c8&text=R3",
+                    "gender": "unknown",
+                    "agreementAccepted": True,
+                    "ageConfirmed": True,
+                },
+            )
+            assert_true(status == 201 and body.get("ok") is True, "profile API should create a second user")
+            second_user_id = body["user"]["id"]
+
+            status, body = post_json(
+                "/api/users/profile",
+                {
+                    "id": release_user_id,
+                    "openid": "release_openid_2",
+                    "nickname": "Release 用户二号刷新",
+                    "avatarUrl": "https://dummyimage.com/160x160/102826/f6e7c8&text=R4",
+                    "gender": "unknown",
+                    "agreementAccepted": True,
+                    "ageConfirmed": True,
+                },
+            )
+            assert_true(
+                status == 201 and body["user"]["id"] == second_user_id,
+                "profile API should prefer openid when cached id belongs to another user",
+            )
+
+            status, body = post_json(
                 "/api/party/join",
                 {
                     "partyId": "party_demo",

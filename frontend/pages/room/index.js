@@ -4,6 +4,10 @@ const { parseEntry } = require("../../utils/entry");
 
 const app = getApp();
 
+function isLocalAvatar(path = "") {
+  return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
+}
+
 Page({
   data: {
     loading: true,
@@ -20,6 +24,7 @@ Page({
     notifyReady: false,
     notifyEnabled: false,
     notifySaving: false,
+    profileSaving: false,
     messageTemplateId: "",
     genderOptions: [
       { key: "female", label: "女" },
@@ -249,6 +254,9 @@ Page({
   },
 
   async onSaveProfile() {
+    if (this.data.profileSaving) {
+      return;
+    }
     const { profileForm } = this.data;
     if (!profileForm.avatarUrl || !profileForm.nickName.trim()) {
       wx.showToast({
@@ -266,6 +274,7 @@ Page({
     }
 
     try {
+      this.setData({ profileSaving: true });
       const openid = await this.ensureOpenid();
       const profile = await api.updateUserProfile({
         ...profileForm,
@@ -275,14 +284,20 @@ Page({
         agreementAccepted: true,
         ageConfirmed: true
       });
-      app.saveUserProfile(profile);
+      const savedProfile = {
+        ...profileForm,
+        ...profile,
+        openid: profile.openid || profileForm.openid || openid,
+        remoteSynced: true
+      };
+      app.saveUserProfile(savedProfile);
       let joinedRoom = null;
-      if (this.data.room && profile.id) {
-        joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, profile.id);
+      if (this.data.room && savedProfile.id) {
+        joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, savedProfile.id);
       }
       this.setData({
         profileReady: true,
-        profileForm: profile,
+        profileForm: savedProfile,
         room: joinedRoom || this.data.room
       });
       this.scrollChatToBottom();
@@ -292,6 +307,8 @@ Page({
         title: error.message || "进入失败",
         icon: "none"
       });
+    } finally {
+      this.setData({ profileSaving: false });
     }
   },
 
@@ -300,7 +317,7 @@ Page({
     if (!profileReady || !profileForm.nickName || !profileForm.avatarUrl) {
       return profileForm;
     }
-    if (profileForm.remoteSynced) {
+    if (profileForm.remoteSynced && !isLocalAvatar(profileForm.avatarUrl)) {
       return profileForm;
     }
 

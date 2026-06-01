@@ -61,6 +61,19 @@ function isLocalFilePath(path = "") {
   return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
 }
 
+function isRemoteFilePath(path = "") {
+  return /^https?:\/\//.test(path) && !/^http:\/\/tmp/.test(path);
+}
+
+function normalizeAvatarUrl(path = "") {
+  return isRemoteFilePath(path) ? path : "";
+}
+
+function avatarInitial(name = "") {
+  const text = String(name || "?").trim();
+  return text ? text.slice(0, 1).toUpperCase() : "?";
+}
+
 function uploadMedia(filePath, mediaType = "file") {
   const baseUrl = app.globalData.apiBaseUrl;
   if (!baseUrl || !filePath || !isLocalFilePath(filePath)) {
@@ -148,11 +161,14 @@ function userLogin(code) {
 }
 
 function normalizeProfile(profile = {}) {
+  const name = profile.nickName || profile.nickname || "新朋友";
   return {
     ...profile,
     id: profile.id,
-    nickName: profile.nickName || profile.nickname || "新朋友",
+    nickName: name,
     avatarUrl: profile.avatarUrl || profile.avatar_url || "",
+    avatar: normalizeAvatarUrl(profile.avatarUrl || profile.avatar_url || ""),
+    avatarText: avatarInitial(name),
     gender: profile.gender || "unknown",
     agreementAcceptedAt: profile.agreementAcceptedAt || profile.agreement_accepted_at || "",
     ageConfirmedAt: profile.ageConfirmedAt || profile.age_confirmed_at || "",
@@ -214,6 +230,7 @@ function normalizeMessage(message = {}) {
   const quote = message.quote || message.quotedMessage || null;
   const isDeleted = !!(message.isDeleted || message.deleted_at);
   const senderId = sender.id || message.senderId || message.sender_id || "";
+  const senderName = sender.displayName || sender.nickname || message.sender || "系统";
   const currentUserId = app.globalData.userProfile && app.globalData.userProfile.id;
   const createdAt = parseApiDate(message.createdAt) || new Date();
   const flashExpiresAt = message.flashExpiresAt || message.flash_expires_at || "";
@@ -230,8 +247,9 @@ function normalizeMessage(message = {}) {
     type: isDeleted ? "text" : (message.kind || message.type || "text"),
     senderId,
     senderType: message.senderType || message.sender_type || "user",
-    sender: sender.displayName || sender.nickname || message.sender || "系统",
-    avatar: sender.avatarUrl || message.avatar || "",
+    sender: senderName,
+    avatar: normalizeAvatarUrl(sender.avatarUrl || message.avatar || ""),
+    avatarText: avatarInitial(senderName),
     time: message.time || formatBeijingTime(createdAt),
     text: isDeleted ? "该消息已被管理员删除" : message.text,
     image: isDeleted ? "" : (message.mediaUrl || message.image),
@@ -347,19 +365,23 @@ function normalizeRoom(payload = {}) {
       openSeats,
       entryCode: table.shareScene || room.room?.entryCode || ""
     },
-    members: (room.members || []).map((member) => ({
-      id: member.id,
-      memberId: member.memberId,
-      name: member.nickname || member.name,
-      role: member.role || "成员",
-      gender: member.gender || "unknown",
-      seatStatus: member.seatStatus || "ghost",
-      seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
-      online: member.online !== false,
-      avatar: member.avatarUrl || member.avatar || "",
-      bannedAt: member.bannedAt || "",
-      banReason: member.banReason || ""
-    })),
+    members: (room.members || []).map((member) => {
+      const name = member.nickname || member.name;
+      return {
+        id: member.id,
+        memberId: member.memberId,
+        name,
+        role: member.role || "成员",
+        gender: member.gender || "unknown",
+        seatStatus: member.seatStatus || "ghost",
+        seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
+        online: member.online !== false,
+        avatar: normalizeAvatarUrl(member.avatarUrl || member.avatar || ""),
+        avatarText: avatarInitial(name),
+        bannedAt: member.bannedAt || "",
+        banReason: member.banReason || ""
+      };
+    }),
     messages: (room.messages || []).map(normalizeMessage).filter((message) => !message.flashExpired)
   };
 }
@@ -596,20 +618,21 @@ function joinParty(partyId, tableId, userId) {
   }).then((res) => normalizeRoom(res));
 }
 
-function updateUserProfile(profile) {
+async function updateUserProfile(profile) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve(normalizeProfile({
       ...profile,
       id: profile.id || `local_${Date.now()}`
     }));
   }
+  const avatarUpload = await uploadMedia(profile.avatarUrl, "avatar");
   return request("/api/users/profile", {
     method: "POST",
     data: {
       id: profile.id,
       openid: profile.openid,
       nickname: profile.nickName || profile.nickname,
-      avatarUrl: profile.avatarUrl,
+      avatarUrl: avatarUpload.mediaUrl || profile.avatarUrl,
       gender: profile.gender || "unknown",
       wechatId: profile.wechatId,
       agreementAccepted: !!profile.agreementAccepted,

@@ -256,7 +256,10 @@ Page({
       this.loadReports()
     } catch (error) {
       this.recalculate(this.data.tables)
-        wx.showToast({ title: '后端暂不可用，显示本地数据', icon: 'none' })
+      const message = error && error.message === '管理员密钥无效'
+        ? '管理员未授权，请带 adminKey 进入'
+        : '后端暂不可用，显示本地数据'
+      wx.showToast({ title: message, icon: 'none' })
     }
   },
 

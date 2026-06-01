@@ -854,6 +854,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "接口不存在")
         except ApiError as exc:
             self.respond({"ok": False, "error": exc.message}, status=exc.status)
+        except sqlite3.IntegrityError:
+            self.respond({"ok": False, "error": "资料已存在，请刷新后重试"}, status=409)
         except Exception as exc:  # pragma: no cover - keeps local dev debuggable.
             self.respond({"ok": False, "error": str(exc)}, status=500)
 
@@ -1038,11 +1040,18 @@ class PartyHandler(BaseHTTPRequestHandler):
         age_requested = bool(body.get("ageConfirmed"))
 
         with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             existing_by_openid = conn.execute("SELECT * FROM users WHERE openid = ?", (openid,)).fetchone()
-            existing_by_id = None
-            if requested_user_id:
-                existing_by_id = conn.execute("SELECT * FROM users WHERE id = ?", (requested_user_id,)).fetchone()
-            existing = existing_by_openid or existing_by_id
+            existing_by_id = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if existing_by_openid and existing_by_id and existing_by_openid["id"] != existing_by_id["id"]:
+                existing = existing_by_openid
+            elif existing_by_id and supplied_openid and existing_by_id["openid"] and existing_by_id["openid"] != supplied_openid:
+                existing = None
+                user_id = f"user_{uuid.uuid5(uuid.NAMESPACE_URL, openid).hex[:12]}"
+                if conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+                    user_id = new_id("user")
+            else:
+                existing = existing_by_openid or existing_by_id
             if existing and not supplied_openid:
                 openid = existing["openid"] or openid
             agreement_accepted_at = existing["agreement_accepted_at"] if existing else None
@@ -1077,26 +1086,61 @@ class PartyHandler(BaseHTTPRequestHandler):
                     ),
                 )
             else:
-                conn.execute(
-                    """
-                    INSERT INTO users
-                      (id, openid, nickname, avatar_url, gender, phone, wechat_id, profile_complete,
-                       agreement_accepted_at, age_confirmed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user_id,
-                        openid,
-                        nickname,
-                        avatar_url,
-                        gender,
-                        phone,
-                        wechat_id,
-                        profile_complete,
-                        agreement_accepted_at,
-                        age_confirmed_at,
-                    ),
-                )
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO users
+                          (id, openid, nickname, avatar_url, gender, phone, wechat_id, profile_complete,
+                           agreement_accepted_at, age_confirmed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            openid,
+                            nickname,
+                            avatar_url,
+                            gender,
+                            phone,
+                            wechat_id,
+                            profile_complete,
+                            agreement_accepted_at,
+                            age_confirmed_at,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    existing = conn.execute(
+                        """
+                        SELECT * FROM users
+                        WHERE id = ? OR openid = ?
+                        ORDER BY CASE WHEN openid = ? THEN 0 ELSE 1 END
+                        LIMIT 1
+                        """,
+                        (user_id, openid, openid),
+                    ).fetchone()
+                    if not existing:
+                        raise
+                    user_id = existing["id"]
+                    conn.execute(
+                        """
+                        UPDATE users
+                        SET openid = COALESCE(openid, ?), nickname = ?, avatar_url = ?, gender = ?, phone = ?, wechat_id = ?,
+                            profile_complete = ?, agreement_accepted_at = ?, age_confirmed_at = ?,
+                            updated_at = datetime('now', '+8 hours')
+                        WHERE id = ?
+                        """,
+                        (
+                            openid,
+                            nickname,
+                            avatar_url,
+                            gender,
+                            phone,
+                            wechat_id,
+                            profile_complete,
+                            agreement_accepted_at,
+                            age_confirmed_at,
+                            user_id,
+                        ),
+                    )
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return {"ok": True, "user": public_user(user)}
 

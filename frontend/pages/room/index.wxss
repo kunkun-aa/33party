@@ -502,6 +502,20 @@ page {
   box-shadow: 0 10rpx 28rpx rgba(0, 0, 0, 0.28);
 }
 
+.avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 248, 237, 0.92);
+  font-size: 28rpx;
+  font-weight: 900;
+  background: radial-gradient(circle at 35% 25%, rgba(91, 212, 199, 0.22), rgba(255, 255, 255, 0.05));
+}
+
+.message-avatar.avatar-fallback {
+  font-size: 25rpx;
+}
+
 .message-body {
   flex: 0 1 auto;
   min-width: 0;
