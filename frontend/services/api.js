@@ -736,6 +736,9 @@ function connectRoomSocket(room, handlers = {}) {
     if ((payload.type === "message.created" || payload.type === "message.updated") && payload.message) {
       payload.message = normalizeMessage(payload.message);
     }
+    if (payload.type === "user.profile.updated" && payload.user) {
+      payload.user = normalizeProfile(payload.user);
+    }
     if (handlers.onMessage) {
       handlers.onMessage(payload);
     }

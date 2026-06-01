@@ -21,6 +21,7 @@ Page({
       agreementAccepted: false,
       ageConfirmed: false
     },
+    profileEditing: false,
     notifyReady: false,
     notifyEnabled: false,
     notifySaving: false,
@@ -174,7 +175,7 @@ Page({
       const room = await api.getRoomByEntry(entry);
       const mergedRoom = this.mergeLocalRoomMessages(room);
       this.setData({
-        room: this.prepareFlashMessages(mergedRoom),
+        room: this.prepareFlashMessages(this.hydrateRoomMessageProfiles(mergedRoom)),
         loading: false
       });
       this.persistRoomMessages();
@@ -226,6 +227,38 @@ Page({
     });
   },
 
+  openProfileEditor() {
+    if (!this.data.profileReady) {
+      return;
+    }
+    const savedProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || this.data.profileForm;
+    this.setData({
+      profileEditing: true,
+      profileForm: {
+        ...this.data.profileForm,
+        ...savedProfile,
+        agreementAccepted: true,
+        ageConfirmed: true
+      }
+    });
+  },
+
+  closeProfileEditor() {
+    if (!this.data.profileReady || this.data.profileSaving) {
+      return;
+    }
+    const savedProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || this.data.profileForm;
+    this.setData({
+      profileEditing: false,
+      profileForm: {
+        ...this.data.profileForm,
+        ...savedProfile,
+        agreementAccepted: true,
+        ageConfirmed: true
+      }
+    });
+  },
+
   onNickNameInput(event) {
     const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail;
     this.setData({
@@ -258,6 +291,7 @@ Page({
       return;
     }
     const { profileForm } = this.data;
+    const wasEditing = this.data.profileEditing;
     if (!profileForm.avatarUrl || !profileForm.nickName.trim()) {
       wx.showToast({
         title: "请补全头像和昵称",
@@ -292,16 +326,23 @@ Page({
       };
       app.saveUserProfile(savedProfile);
       let joinedRoom = null;
-      if (this.data.room && savedProfile.id) {
+      if (this.data.room && savedProfile.id && !wasEditing) {
         joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, savedProfile.id);
       }
       this.setData({
         profileReady: true,
+        profileEditing: false,
         profileForm: savedProfile,
         room: joinedRoom || this.data.room
       });
+      if (wasEditing) {
+        this.applyUserProfileUpdate(savedProfile);
+        wx.showToast({ title: "资料已更新", icon: "none" });
+      }
       this.scrollChatToBottom();
-      this.requestMessageSubscription();
+      if (!wasEditing) {
+        this.requestMessageSubscription();
+      }
     } catch (error) {
       wx.showToast({
         title: error.message || "进入失败",
@@ -765,6 +806,11 @@ Page({
   },
 
   previewAvatar(event) {
+    const userId = event.currentTarget.dataset.userId;
+    if (userId && userId === (this.data.profileForm && this.data.profileForm.id)) {
+      this.openProfileEditor();
+      return;
+    }
     const url = event.currentTarget.dataset.url;
     if (!url) {
       return;
@@ -1001,7 +1047,67 @@ Page({
     }
     if (payload.type === "message.updated" && payload.message) {
       this.replaceMessage(payload.message);
+      return;
     }
+    if (payload.type === "user.profile.updated" && payload.user) {
+      this.applyUserProfileUpdate(payload.user);
+    }
+  },
+
+  applyUserProfileUpdate(user = {}) {
+    if (!this.data.room || !user.id) {
+      return;
+    }
+    const name = user.nickName || user.nickname || user.name || "新朋友";
+    const avatar = user.avatar || user.avatarUrl || "";
+    const gender = user.gender || "unknown";
+    const avatarText = name ? String(name).slice(0, 1).toUpperCase() : "?";
+    const currentUserId = this.data.profileForm && this.data.profileForm.id;
+    const members = (this.data.room.members || []).map((member) => {
+      if (member.id !== user.id) {
+        return member;
+      }
+      return {
+        ...member,
+        name,
+        gender,
+        avatar,
+        avatarText
+      };
+    });
+    const messages = (this.data.room.messages || []).map((message) => {
+      if (message.senderId !== user.id) {
+        return message;
+      }
+      return {
+        ...message,
+        sender: name,
+        avatar,
+        avatarText
+      };
+    });
+    const dataPatch = {
+      "room.members": members,
+      "room.messages": messages
+    };
+    if (currentUserId && user.id === currentUserId) {
+      const nextProfile = {
+        ...this.data.profileForm,
+        ...user,
+        nickName: name,
+        avatarUrl: user.avatarUrl || avatar,
+        avatar,
+        avatarText,
+        gender,
+        remoteSynced: true,
+        agreementAccepted: true,
+        ageConfirmed: true
+      };
+      app.saveUserProfile(nextProfile);
+      dataPatch.profileForm = nextProfile;
+    }
+    this.setData(dataPatch);
+    this.persistRoomMessages();
   },
 
   scrollChatToBottom() {
@@ -1018,6 +1124,33 @@ Page({
     return {
       ...room,
       messages: room.messages.map((message) => this.prepareDisplayMessage(message))
+    };
+  },
+
+  hydrateRoomMessageProfiles(room) {
+    if (!room || !room.messages || !room.members) {
+      return room;
+    }
+    const memberById = {};
+    room.members.forEach((member) => {
+      if (member && member.id) {
+        memberById[member.id] = member;
+      }
+    });
+    return {
+      ...room,
+      messages: room.messages.map((message) => {
+        const member = memberById[message.senderId];
+        if (!member) {
+          return message;
+        }
+        return {
+          ...message,
+          sender: member.name || message.sender,
+          avatar: member.avatar || message.avatar,
+          avatarText: member.avatarText || message.avatarText
+        };
+      })
     };
   },
 
@@ -1159,20 +1292,49 @@ Page({
       return room;
     }
     const localMessages = wx.getStorageSync(key) || [];
-    const merged = [...localMessages, ...(room.messages || [])];
-    const seen = {};
-    const messages = [];
-    merged.forEach((message) => {
-      if (!message || !message.id || seen[message.id]) {
+    const messagesById = {};
+    localMessages.forEach((message) => {
+      if (!message || !message.id) {
         return;
       }
-      seen[message.id] = true;
-      messages.push(message);
+      messagesById[message.id] = message;
     });
+    (room.messages || []).forEach((message) => {
+      if (!message || !message.id) {
+        return;
+      }
+      messagesById[message.id] = {
+        ...(messagesById[message.id] || {}),
+        ...message
+      };
+    });
+    const messages = Object.keys(messagesById)
+      .map((id) => messagesById[id])
+      .sort((left, right) => {
+        const leftTime = this.parseMessageSortTime(left);
+        const rightTime = this.parseMessageSortTime(right);
+        if (leftTime !== rightTime) {
+          return leftTime - rightTime;
+        }
+        return String(left.id || "").localeCompare(String(right.id || ""));
+      });
     return {
       ...room,
       messages: messages.slice(-80)
     };
+  },
+
+  parseMessageSortTime(message = {}) {
+    const raw = message.createdAt || message.created_at || message.flashStartedAt || "";
+    const parsed = raw ? this.parseApiDate(raw).getTime() : NaN;
+    if (!isNaN(parsed)) {
+      return parsed;
+    }
+    const time = String(message.time || "").match(/^(\d{1,2}):(\d{2})$/);
+    if (time) {
+      return Number(time[1]) * 60 + Number(time[2]);
+    }
+    return 0;
   },
 
   persistRoomMessages() {

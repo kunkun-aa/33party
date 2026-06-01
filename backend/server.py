@@ -1038,6 +1038,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         profile_complete = 1 if nickname and avatar_url else 0
         agreement_requested = bool(body.get("agreementAccepted"))
         age_requested = bool(body.get("ageConfirmed"))
+        changed_room_keys: set[str] = set()
 
         with connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1142,7 +1143,25 @@ class PartyHandler(BaseHTTPRequestHandler):
                         ),
                     )
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            return {"ok": True, "user": public_user(user)}
+            updated_user = public_user(user)
+            changed_room_keys = {
+                room_channel_key(row["party_id"], row["table_id"])
+                for row in conn.execute(
+                    """
+                    SELECT party_id, table_id
+                    FROM party_members
+                    WHERE user_id = ?
+                    """,
+                    (user_id,),
+                ).fetchall()
+            }
+        if changed_room_keys:
+            for channel_key in changed_room_keys:
+                ROOM_WS_HUB.broadcast(channel_key, {
+                    "type": "user.profile.updated",
+                    "user": updated_user,
+                })
+        return {"ok": True, "user": updated_user}
 
     def join_party(self, body: dict) -> dict:
         party_id = require(body, "partyId")

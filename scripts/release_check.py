@@ -43,6 +43,7 @@ def check_static_files() -> None:
     assert_true("/api/admin/users/ban" in api_js, "api service should expose admin ban API")
     assert_true("/api/users/login" in api_js, "api service should support user login")
     assert_true("/ws/room" in api_js, "api service should build room websocket url")
+    assert_true("user.profile.updated" in room_js and "user.profile.updated" in api_js, "room page should sync profile updates")
     assert_true("messageTemplateId" in app_js and "messageTemplateId" in config_js, "app config should carry message template id")
 
 
@@ -361,6 +362,22 @@ def run() -> int:
                 _, event = read_ws_frame(sock)
                 assert_true(event.get("type") == "message.created", "websocket should receive message.created")
                 assert_true(event["message"]["text"] == "release check realtime", "websocket message should match posted message")
+
+                status, body = post_json(
+                    "/api/users/profile",
+                    {
+                        "id": "user_demo_1",
+                        "nickname": "Release Demo 新名",
+                        "avatarUrl": "https://dummyimage.com/160x160/102826/f6e7c8&text=RD",
+                        "gender": "female",
+                        "agreementAccepted": True,
+                        "ageConfirmed": True,
+                    },
+                )
+                assert_true(status == 201 and body.get("ok") is True, "profile update should save for joined user")
+                _, event = read_ws_frame(sock)
+                assert_true(event.get("type") == "user.profile.updated", "websocket should receive user.profile.updated")
+                assert_true(event["user"]["nickname"] == "Release Demo 新名", "profile websocket payload should carry new nickname")
             finally:
                 sock.close()
 

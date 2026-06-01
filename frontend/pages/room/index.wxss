@@ -967,6 +967,7 @@ page {
 .flash-second:active,
 .gender-tab:active,
 .avatar-picker:active,
+.profile-close:active,
 .profile-submit:active {
   transform: scale(0.94);
   animation: tapElastic 260ms cubic-bezier(0.2, 0.95, 0.35, 1);
@@ -1085,6 +1086,26 @@ page {
   border-radius: 999rpx;
   opacity: 0.82;
   box-shadow: 0 0 36rpx rgba(215, 251, 82, 0.2);
+}
+
+.profile-close {
+  position: absolute;
+  top: 24rpx;
+  left: 24rpx;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54rpx;
+  height: 54rpx;
+  color: rgba(255, 248, 237, 0.78);
+  font-size: 38rpx;
+  font-weight: 700;
+  line-height: 54rpx;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1rpx solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  transition: transform 160ms cubic-bezier(0.2, 0.9, 0.2, 1), background-color 160ms ease;
 }
 
 .profile-head {

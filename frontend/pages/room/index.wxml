@@ -79,7 +79,7 @@
         </view>
         <scroll-view class="member-row" scroll-x enhanced show-scrollbar="{{false}}">
           <view class="member-card" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
-            <view class="avatar-wrap" data-url="{{item.avatar}}" bindtap="previewAvatar">
+            <view class="avatar-wrap" data-url="{{item.avatar}}" data-user-id="{{item.id}}" bindtap="previewAvatar">
               <image wx:if="{{item.avatar}}" class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
               <view wx:else class="member-avatar avatar-fallback">{{item.avatarText}}</view>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
@@ -96,7 +96,7 @@
         </view>
         <view class="message-list">
           <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindlongpress="onQuoteMessage">
-            <image wx:if="{{item.avatar}}" class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" bindtap="previewAvatar"></image>
+            <image wx:if="{{item.avatar}}" class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" data-user-id="{{item.senderId}}" bindtap="previewAvatar"></image>
             <view wx:else class="message-avatar avatar-fallback">{{item.avatarText}}</view>
             <view class="message-body">
               <view class="message-meta">
@@ -202,13 +202,14 @@
       </view>
     </view>
 
-    <view class="profile-mask" wx:if="{{!profileReady}}">
+    <view class="profile-mask" wx:if="{{!profileReady || profileEditing}}">
       <view class="profile-panel">
+        <view class="profile-close" wx:if="{{profileReady}}" bindtap="closeProfileEditor">×</view>
         <view class="profile-head">
           <view class="profile-heading">
-            <text class="profile-kicker">首次进入</text>
-            <text class="profile-title">完善头像和昵称</text>
-            <text class="profile-copy">进入主局后，局头和同桌成员会看到你的资料。</text>
+            <text class="profile-kicker">{{profileReady ? '个人资料' : '首次进入'}}</text>
+            <text class="profile-title">{{profileReady ? '修改头像和昵称' : '完善头像和昵称'}}</text>
+            <text class="profile-copy">{{profileReady ? '保存后，局头和同桌成员会立即看到最新资料。' : '进入主局后，局头和同桌成员会看到你的资料。'}}</text>
           </view>
           <button class="avatar-picker" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
             <image wx:if="{{profileForm.avatarUrl}}" class="picked-avatar" src="{{profileForm.avatarUrl}}" mode="aspectFill"></image>
@@ -225,7 +226,7 @@
             bindtap="onGenderTap"
           >{{item.label}}</button>
         </view>
-        <view class="notify-row" wx:if="{{notifyReady}}">
+        <view class="notify-row" wx:if="{{notifyReady && !profileReady}}">
           <view>
             <text class="notify-title">通知栏消息</text>
             <text class="notify-copy">{{notifyEnabled ? '已开启，新消息会进入微信通知栏' : '离开小程序后接收同桌新消息'}}</text>
@@ -234,7 +235,7 @@
             {{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}
           </button>
         </view>
-        <view class="agreement-row" bindtap="toggleAgreement">
+        <view class="agreement-row" wx:if="{{!profileReady}}" bindtap="toggleAgreement">
           <text class="agreement-check">{{profileForm.agreementAccepted && profileForm.ageConfirmed ? '✓' : ''}}</text>
           <view class="agreement-copy">
             <text>我已阅读并同意</text>
@@ -244,7 +245,7 @@
             <text>，并确认本人已满 18 周岁</text>
           </view>
         </view>
-        <button class="profile-submit" bindtap="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">进入主局</button>
+        <button class="profile-submit" bindtap="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">{{profileReady ? '保存资料' : '进入主局'}}</button>
       </view>
     </view>
   </block>
