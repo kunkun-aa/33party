@@ -162,12 +162,64 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "messages", "like_count", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "is_flash", "INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "messages", "flash_expires_at", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_message_id", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_sender", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_kind", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_text", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_media_url", "TEXT")
+    add_column_if_missing(conn, "messages", "quote_duration_seconds", "INTEGER")
+    migrate_messages_video_kind(conn)
     conn.execute("UPDATE users SET gender = 'female' WHERE id = 'user_demo_1' AND gender = 'unknown'")
     conn.execute("UPDATE users SET gender = 'male' WHERE id = 'user_demo_2' AND gender = 'unknown'")
     conn.execute("UPDATE party_members SET seat_status = 'seated' WHERE id = 'member_demo_1'")
     conn.execute("UPDATE messages SET kind = 'photo' WHERE kind = 'photo_burst'")
     conn.execute("UPDATE messages SET text = REPLACE(text, '爆照一下，', '') WHERE text LIKE '%爆照一下%'")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_openid ON admins(openid)")
+
+
+def migrate_messages_video_kind(conn: sqlite3.Connection) -> None:
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+    ).fetchone()
+    if not table_sql or "'video'" in (table_sql["sql"] or ""):
+        return
+    conn.executescript(
+        """
+        ALTER TABLE messages RENAME TO messages_old;
+        CREATE TABLE messages (
+          id TEXT PRIMARY KEY,
+          party_id TEXT NOT NULL REFERENCES parties(id),
+          table_id TEXT NOT NULL REFERENCES party_tables(id),
+          sender_type TEXT NOT NULL CHECK(sender_type IN ('user', 'admin')),
+          sender_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('text', 'voice', 'photo', 'video', 'system', 'photo_burst')),
+          text TEXT,
+          media_url TEXT,
+          duration_seconds INTEGER,
+          quote_message_id TEXT,
+          quote_sender TEXT,
+          quote_kind TEXT,
+          quote_text TEXT,
+          quote_media_url TEXT,
+          quote_duration_seconds INTEGER,
+          like_count INTEGER NOT NULL DEFAULT 0,
+          is_flash INTEGER NOT NULL DEFAULT 0,
+          flash_expires_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
+        );
+        INSERT INTO messages
+          (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
+           duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+           quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at)
+        SELECT
+          id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
+          duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+          quote_media_url, quote_duration_seconds, like_count, is_flash, flash_expires_at, created_at
+        FROM messages_old;
+        DROP TABLE messages_old;
+        CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(party_id, table_id, id);
+        """
+    )
 
 
 def seed_db(conn: sqlite3.Connection) -> None:
@@ -582,7 +634,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         sender_type = body.get("senderType", "user")
         sender_id = require(body, "senderId")
         kind = body.get("kind", "text")
-        if kind not in {"text", "voice", "photo", "system", "photo_burst"}:
+        if kind not in {"text", "voice", "photo", "video", "system", "photo_burst"}:
             raise ApiError(400, "不支持的消息类型")
 
         with connect() as conn:
@@ -594,8 +646,9 @@ class PartyHandler(BaseHTTPRequestHandler):
                 """
                 INSERT INTO messages
                   (id, party_id, table_id, sender_type, sender_id, kind, text, media_url,
-                   duration_seconds, is_flash, flash_expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', '+8 hours', ?) ELSE NULL END)
+                   duration_seconds, quote_message_id, quote_sender, quote_kind, quote_text,
+                   quote_media_url, quote_duration_seconds, is_flash, flash_expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now', '+8 hours', ?) ELSE NULL END)
                 """,
                 (
                     msg_id,
@@ -607,6 +660,12 @@ class PartyHandler(BaseHTTPRequestHandler):
                     body.get("text"),
                     body.get("mediaUrl"),
                     body.get("durationSeconds"),
+                    body.get("quoteMessageId"),
+                    body.get("quoteSender"),
+                    body.get("quoteKind"),
+                    body.get("quoteText"),
+                    body.get("quoteMediaUrl"),
+                    body.get("quoteDurationSeconds"),
                     1 if body.get("isFlash") else 0,
                     1 if body.get("isFlash") else 0,
                     f"+{int(body.get('flashSeconds') or 10)} seconds",
@@ -998,6 +1057,14 @@ class PartyHandler(BaseHTTPRequestHandler):
             "text": row["text"],
             "mediaUrl": row["media_url"],
             "durationSeconds": row["duration_seconds"],
+            "quote": {
+                "id": row["quote_message_id"],
+                "sender": row["quote_sender"],
+                "type": row["quote_kind"],
+                "text": row["quote_text"],
+                "mediaUrl": row["quote_media_url"],
+                "durationSeconds": row["quote_duration_seconds"],
+            } if row["quote_message_id"] else None,
             "likeCount": row["like_count"],
             "isFlash": bool(row["is_flash"]),
             "flashExpiresAt": row["flash_expires_at"],

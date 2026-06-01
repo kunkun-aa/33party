@@ -128,6 +128,7 @@ function formatBeijingDateTime(value) {
 
 function normalizeMessage(message = {}) {
   const sender = message.sender || {};
+  const quote = message.quote || message.quotedMessage || null;
   const senderId = sender.id || message.senderId || message.sender_id || "";
   const currentUserId = app.globalData.userProfile && app.globalData.userProfile.id;
   const createdAt = parseApiDate(message.createdAt) || new Date();
@@ -150,8 +151,22 @@ function normalizeMessage(message = {}) {
     time: message.time || formatBeijingTime(createdAt),
     text: message.text,
     image: message.mediaUrl || message.image,
+    video: message.mediaUrl || message.video || "",
     duration: message.duration || (message.durationSeconds ? `${message.durationSeconds}''` : "06''"),
     durationSeconds: message.durationSeconds || message.duration_seconds || 6,
+    voicePath: message.voicePath || message.mediaUrl || "",
+    transcript: message.transcript || "",
+    transcribing: false,
+    playing: false,
+    quote: quote && quote.id ? {
+      id: quote.id,
+      sender: quote.sender || "对方",
+      type: quote.type || quote.kind || "text",
+      text: quote.text || "",
+      mediaUrl: quote.mediaUrl || quote.image || "",
+      durationSeconds: quote.durationSeconds || quote.duration_seconds || 0,
+      summary: quote.summary || buildQuoteSummary(quote)
+    } : null,
     likeCount: message.likeCount || message.likeCount === 0 ? message.likeCount : (message.likes || 0),
     isFlash: !!(message.isFlash || message.is_flash),
     flashSeconds: message.flashSeconds || computedFlashSeconds || 10,
@@ -160,6 +175,21 @@ function normalizeMessage(message = {}) {
     flashExpired: !!((message.isFlash || message.is_flash) && flashExpiresDate && flashExpiresDate.getTime() <= Date.now()),
     isMine: !!(message.isMine || (currentUserId && senderId && currentUserId === senderId))
   };
+}
+
+function buildQuoteSummary(quote = {}) {
+  const type = quote.type || quote.kind;
+  if (type === "photo") {
+    return "[图片]";
+  }
+  if (type === "video") {
+    return "[视频]";
+  }
+  if (type === "voice") {
+    const duration = quote.duration || (quote.durationSeconds ? `${quote.durationSeconds}''` : "");
+    return duration ? `[语音 ${duration}]` : "[语音]";
+  }
+  return quote.text || "消息";
 }
 
 function normalizeRoom(payload = {}) {
@@ -483,8 +513,14 @@ function sendRoomMessage(roomId, tableId, message) {
       senderId: app.globalData.userProfile && app.globalData.userProfile.id,
       kind: message.type,
       text: message.text,
-      mediaUrl: message.mediaUrl || message.image || message.voicePath,
+      mediaUrl: message.mediaUrl || message.image || message.video || message.voicePath,
       durationSeconds: message.durationSeconds,
+      quoteMessageId: message.quote && message.quote.id,
+      quoteSender: message.quote && message.quote.sender,
+      quoteKind: message.quote && message.quote.type,
+      quoteText: message.quote && message.quote.text,
+      quoteMediaUrl: message.quote && message.quote.mediaUrl,
+      quoteDurationSeconds: message.quote && message.quote.durationSeconds,
       isFlash: message.isFlash,
       flashSeconds: message.flashSeconds
     }

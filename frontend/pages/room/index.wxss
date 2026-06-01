@@ -507,8 +507,9 @@ page {
 }
 
 .message-body {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 560rpx;
 }
 
 .message-meta {
@@ -524,6 +525,38 @@ page {
 
 .message.mine .message-meta {
   flex-direction: row-reverse;
+}
+
+.quote-card,
+.composer-quote {
+  display: flex;
+  gap: 10rpx;
+  max-width: 520rpx;
+  margin-bottom: 10rpx;
+  padding: 12rpx 16rpx;
+  overflow: hidden;
+  color: rgba(255, 248, 237, 0.72);
+  font-size: 21rpx;
+  background: rgba(255, 255, 255, 0.055);
+  border-left: 4rpx solid rgba(226, 178, 99, 0.62);
+  border-radius: 14rpx;
+}
+
+.quote-card {
+  flex-direction: column;
+}
+
+.quote-sender,
+.quote-summary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-sender {
+  color: rgba(226, 178, 99, 0.9);
+  font-weight: 900;
 }
 
 .message-name {
@@ -559,6 +592,7 @@ page {
 .bubble,
 .photo-message {
   position: relative;
+  display: inline-flex;
   max-width: 520rpx;
   overflow: hidden;
   transform: translateZ(0);
@@ -581,14 +615,20 @@ page {
   color: rgba(255, 248, 237, 0.92);
   font-size: 27rpx;
   line-height: 1.55;
+  word-break: break-word;
 }
 
 .voice-bubble {
-  display: flex;
   align-items: center;
   gap: 18rpx;
-  width: 332rpx;
+  min-width: 280rpx;
+  width: auto;
   padding: 20rpx 22rpx;
+}
+
+.voice-bubble.playing {
+  border-color: rgba(215, 251, 82, 0.34);
+  box-shadow: inset 0 1rpx 0 rgba(255, 255, 255, 0.08), 0 18rpx 54rpx rgba(91, 212, 199, 0.14);
 }
 
 .voice-bars {
@@ -632,10 +672,45 @@ page {
   font-weight: 700;
 }
 
+.voice-transcribe {
+  flex: 0 0 auto;
+  margin-left: 8rpx;
+  padding: 4rpx 10rpx;
+  color: rgba(215, 251, 82, 0.92);
+  font-size: 20rpx;
+  font-weight: 900;
+  background: rgba(215, 251, 82, 0.08);
+  border: 1rpx solid rgba(215, 251, 82, 0.16);
+  border-radius: 999rpx;
+}
+
+.voice-transcript {
+  max-width: 520rpx;
+  margin-top: 8rpx;
+  padding: 12rpx 16rpx;
+  color: rgba(255, 248, 237, 0.82);
+  font-size: 23rpx;
+  line-height: 1.45;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1rpx solid rgba(255, 255, 255, 0.08);
+  border-radius: 14rpx;
+}
+
 .photo-shot {
   display: block;
   width: 520rpx;
   height: 310rpx;
+}
+
+.video-shot {
+  display: block;
+  width: 520rpx;
+  height: 310rpx;
+  background: #05070a;
+}
+
+.video-message {
+  background: rgba(5, 7, 10, 0.82);
 }
 
 .photo-placeholder {
@@ -722,7 +797,8 @@ page {
 }
 
 .voice-recording,
-.voice-review {
+.voice-review,
+.composer-quote {
   display: flex;
   align-items: center;
   gap: 12rpx;
@@ -734,6 +810,33 @@ page {
   border: 1rpx solid rgba(255, 255, 255, 0.1);
   border-radius: 20rpx;
   animation: panelPop 300ms cubic-bezier(0.18, 1.15, 0.32, 1) both;
+}
+
+.composer-quote {
+  justify-content: space-between;
+  min-height: 0;
+  margin-bottom: 14rpx;
+  border-left-color: rgba(215, 251, 82, 0.7);
+}
+
+.composer-quote-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.quote-close {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44rpx;
+  height: 44rpx;
+  color: rgba(255, 248, 237, 0.76);
+  font-size: 32rpx;
+  font-weight: 700;
+  line-height: 44rpx;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 50%;
 }
 
 .voice-review {

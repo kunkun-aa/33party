@@ -88,7 +88,7 @@
           <text class="section-title">房间小聊</text>
         </view>
         <view class="message-list">
-          <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id">
+          <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindlongpress="onQuoteMessage">
             <image class="message-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
             <view class="message-body">
               <view class="message-meta">
@@ -97,27 +97,40 @@
                 <text class="meta-like" data-id="{{item.id}}" bindtap="onLike">赞 {{item.likeCount || 0}}</text>
               </view>
 
+              <view class="quote-card" wx:if="{{item.quote}}">
+                <text class="quote-sender">{{item.quote.sender}}</text>
+                <text class="quote-summary">{{item.quote.summary}}</text>
+              </view>
+
               <view wx:if="{{item.type === 'text'}}" class="bubble text-bubble">
                 <text>{{item.text}}</text>
               </view>
 
-              <view wx:elif="{{item.type === 'voice'}}" class="bubble voice-bubble">
+              <view wx:elif="{{item.type === 'voice'}}" class="bubble voice-bubble {{item.playing ? 'playing' : ''}}" data-id="{{item.id}}" bindtap="onPlayVoice">
                 <view class="voice-bars">
                   <text></text>
                   <text></text>
                   <text></text>
                   <text></text>
                 </view>
-                <text class="voice-copy">语音消息 {{item.duration}}</text>
+                <text class="voice-copy">{{item.playing ? '播放中' : '语音消息'}} {{item.duration}}</text>
+                <text class="voice-transcribe" data-id="{{item.id}}" catchtap="transcribeVoice">{{item.transcribing ? '转写中' : '转文字'}}</text>
+              </view>
+              <view class="voice-transcript" wx:if="{{item.transcript}}">
+                <text>{{item.transcript}}</text>
               </view>
 
               <view wx:elif="{{item.type === 'photo'}}" class="photo-message">
                 <view wx:if="{{item.flashExpired}}" class="flash-expired">照片已销毁</view>
-                <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill"></image>
+                <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill" data-id="{{item.id}}" bindtap="previewMedia"></image>
                 <view wx:else class="photo-placeholder">照片暂不可见</view>
                 <view class="photo-actions" wx:if="{{item.isFlash || item.text}}">
                   <text>{{item.isFlash ? item.flashCountdownText : item.text}}</text>
                 </view>
+              </view>
+
+              <view wx:elif="{{item.type === 'video'}}" class="photo-message video-message" data-id="{{item.id}}" bindtap="previewMedia">
+                <video class="video-shot" src="{{item.video}}" controls show-fullscreen-btn show-play-btn object-fit="cover"></video>
               </view>
 
               <view wx:else class="bubble text-bubble">
@@ -157,6 +170,14 @@
         </view>
         <view class="voice-action cancel" bindtap="discardVoiceReview">取消</view>
         <view class="voice-action finish" bindtap="sendVoiceReview">{{sending ? '...' : '发送'}}</view>
+      </view>
+
+      <view class="composer-quote" wx:if="{{quotedMessage}}">
+        <view class="composer-quote-copy">
+          <text class="quote-sender">引用 {{quotedMessage.sender}}</text>
+          <text class="quote-summary">{{quotedMessage.summary}}</text>
+        </view>
+        <view class="quote-close" bindtap="clearQuote">×</view>
       </view>
 
       <view class="composer-options">

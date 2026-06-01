@@ -28,6 +28,7 @@ Page({
     voiceRecordSeconds: 0,
     voiceReview: null,
     chatScrollTarget: "",
+    quotedMessage: null,
     music: {
       playing: false,
       title: "台内背景音乐",
@@ -42,6 +43,7 @@ Page({
     this.loadRoom(entry);
     this.initMusic();
     this.initRecorder();
+    this.initVoicePlayer();
   },
 
   onUnload() {
@@ -55,6 +57,10 @@ Page({
     if (this.recorderManager && this.data.voiceRecording) {
       this.voiceRecordCanceled = true;
       this.recorderManager.stop();
+    }
+    if (this.voicePlayer) {
+      this.voicePlayer.stop();
+      this.voicePlayer.destroy();
     }
     this.stopFlashCountdown();
   },
@@ -237,6 +243,25 @@ Page({
     });
   },
 
+  initVoicePlayer() {
+    if (!wx.createInnerAudioContext) {
+      return;
+    }
+    this.voicePlayer = wx.createInnerAudioContext();
+    this.voicePlayer.onEnded(() => this.markVoicePlaying(""));
+    this.voicePlayer.onStop(() => this.markVoicePlaying(""));
+    this.voicePlayer.onError((error) => {
+      console.warn("语音播放失败", error);
+      this.markVoicePlaying("");
+      wx.showToast({ title: "语音暂不可播放", icon: "none" });
+    });
+    try {
+      this.speechPlugin = requirePlugin("WechatSI");
+    } catch (error) {
+      this.speechPlugin = null;
+    }
+  },
+
   openMap() {
     const venue = this.data.room && this.data.room.venue;
     if (!venue || !venue.latitude || !venue.longitude) {
@@ -274,15 +299,17 @@ Page({
       sender: profile.nickName,
       avatar: profile.avatarUrl,
       time: this.formatTime(new Date()),
-      text
+      text,
+      quote: this.data.quotedMessage
     };
     try {
       const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
       this.appendMessage(saved);
-      this.setData({ inputText: "" });
+      this.setData({ inputText: "", quotedMessage: null });
     } catch (error) {
       console.warn("消息发送失败，已本地追加", error);
       this.appendMessage({ ...message, id: `local_msg_${Date.now()}` });
+      this.setData({ inputText: "", quotedMessage: null });
       wx.showToast({ title: "后端暂未接收，已本地显示", icon: "none" });
     } finally {
       this.setData({ sending: false });
@@ -417,16 +444,17 @@ Page({
       duration: review.duration,
       durationSeconds: review.durationSeconds,
       voicePath: review.tempFilePath,
-      text: "语音消息"
+      text: "语音消息",
+      quote: this.data.quotedMessage
     };
     try {
       const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
       this.appendMessage(saved);
-      this.setData({ voiceReview: null });
+      this.setData({ voiceReview: null, quotedMessage: null });
     } catch (error) {
       console.warn("语音消息发送失败，已本地追加", error);
       this.appendMessage({ ...message, id: `local_voice_${Date.now()}` });
-      this.setData({ voiceReview: null });
+      this.setData({ voiceReview: null, quotedMessage: null });
     } finally {
       this.setData({ sending: false });
     }
@@ -435,34 +463,190 @@ Page({
   onChoosePhoto() {
     wx.chooseMedia({
       count: 1,
-      mediaType: ["image"],
+      mediaType: ["image", "video"],
       sourceType: ["album", "camera"],
       success: async (res) => {
         const profile = await this.ensureProfileSynced();
         const file = res.tempFiles[0];
+        const isVideo = file.fileType === "video" || /\.(mp4|mov|m4v)$/i.test(file.tempFilePath || "");
         const message = {
-          type: "photo",
+          type: isVideo ? "video" : "photo",
           senderId: profile.id,
           isMine: true,
           sender: profile.nickName || "我",
           avatar: profile.avatarUrl,
           time: this.formatTime(new Date()),
           text: "",
-          image: file.tempFilePath,
+          image: isVideo ? "" : file.tempFilePath,
+          video: isVideo ? file.tempFilePath : "",
+          mediaUrl: file.tempFilePath,
           likeCount: 0,
-          isFlash: this.data.flashEnabled,
+          isFlash: !isVideo && this.data.flashEnabled,
           flashSeconds: this.data.flashSeconds,
-          flashRemainingSeconds: this.data.flashEnabled ? this.data.flashSeconds : 0
+          flashRemainingSeconds: !isVideo && this.data.flashEnabled ? this.data.flashSeconds : 0,
+          quote: this.data.quotedMessage
         };
         try {
           const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
           this.appendMessage(saved);
+          this.setData({ quotedMessage: null });
         } catch (error) {
-          console.warn("照片消息发送失败，已本地追加", error);
-          this.appendMessage({ ...message, id: `local_photo_${Date.now()}` });
+          console.warn("媒体消息发送失败，已本地追加", error);
+          this.appendMessage({ ...message, id: `local_media_${Date.now()}` });
+          this.setData({ quotedMessage: null });
         }
       }
     });
+  },
+
+  onQuoteMessage(event) {
+    const message = this.findMessageById(event.currentTarget.dataset.id);
+    if (!message) {
+      return;
+    }
+    this.setData({ quotedMessage: this.buildQuoteFromMessage(message) });
+    wx.showToast({ title: "已引用消息", icon: "none" });
+  },
+
+  clearQuote() {
+    this.setData({ quotedMessage: null });
+  },
+
+  findMessageById(id) {
+    return (this.data.room && this.data.room.messages || []).find((message) => message.id === id);
+  },
+
+  buildQuoteFromMessage(message) {
+    const summary = this.getQuoteSummary(message);
+    return {
+      id: message.id,
+      sender: message.sender || "对方",
+      type: message.type || "text",
+      text: message.text || "",
+      mediaUrl: message.image || message.video || message.voicePath || "",
+      durationSeconds: message.durationSeconds || 0,
+      summary
+    };
+  },
+
+  getQuoteSummary(message = {}) {
+    if (message.type === "photo") {
+      return "[图片]";
+    }
+    if (message.type === "video") {
+      return "[视频]";
+    }
+    if (message.type === "voice") {
+      return message.duration ? `[语音 ${message.duration}]` : "[语音]";
+    }
+    return message.text || "消息";
+  },
+
+  onPlayVoice(event) {
+    const message = this.findMessageById(event.currentTarget.dataset.id);
+    if (!message) {
+      return;
+    }
+    const src = message.voicePath || message.image || "";
+    if (!src) {
+      wx.showToast({ title: "这条语音暂无音频文件", icon: "none" });
+      return;
+    }
+    if (!this.voicePlayer) {
+      this.initVoicePlayer();
+    }
+    if (!this.voicePlayer) {
+      wx.showToast({ title: "当前环境不支持播放", icon: "none" });
+      return;
+    }
+    if (message.playing) {
+      this.voicePlayer.stop();
+      this.markVoicePlaying("");
+      return;
+    }
+    this.voicePlayer.stop();
+    this.voicePlayer.src = src;
+    this.voicePlayer.play();
+    this.markVoicePlaying(message.id);
+  },
+
+  previewMedia(event) {
+    const message = this.findMessageById(event.currentTarget.dataset.id);
+    if (!message) {
+      return;
+    }
+    if (message.type === "photo" && message.image) {
+      const urls = (this.data.room && this.data.room.messages || [])
+        .filter((item) => item.type === "photo" && item.image && !item.flashExpired)
+        .map((item) => item.image);
+      wx.previewImage({
+        current: message.image,
+        urls: urls.length ? urls : [message.image]
+      });
+      return;
+    }
+    if (message.type === "video" && message.video && wx.previewMedia) {
+      wx.previewMedia({
+        current: 0,
+        sources: [{ url: message.video, type: "video" }]
+      });
+    }
+  },
+
+  markVoicePlaying(id) {
+    const messages = (this.data.room && this.data.room.messages || []).map((message) => ({
+      ...message,
+      playing: message.id === id
+    }));
+    this.setData({ "room.messages": messages });
+  },
+
+  transcribeVoice(event) {
+    const id = event.currentTarget.dataset.id;
+    const message = this.findMessageById(id);
+    if (!message) {
+      return;
+    }
+    const src = message.voicePath || message.image || "";
+    if (this.speechPlugin && src) {
+      this.updateMessage(id, { transcribing: true });
+      this.speechPlugin.translateVoice({
+        filePath: src,
+        lang: "zh_CN",
+        success: (res) => {
+          this.updateMessage(id, {
+            transcribing: false,
+            transcript: res.result || "未识别到文字"
+          });
+        },
+        fail: (error) => {
+          console.warn("语音转文字失败", error);
+          this.updateMessage(id, {
+            transcribing: false,
+            transcript: "语音转文字服务暂不可用"
+          });
+        }
+      });
+      return;
+    }
+    this.updateMessage(id, { transcribing: true });
+    setTimeout(() => {
+      const transcript = message.transcript || (message.text && message.text !== "语音消息" ? message.text : "语音转文字服务待接入");
+      this.updateMessage(id, {
+        transcribing: false,
+        transcript
+      });
+    }, 420);
+  },
+
+  updateMessage(id, patch) {
+    const messages = (this.data.room && this.data.room.messages || []).map((message) => {
+      if (message.id === id) {
+        return { ...message, ...patch };
+      }
+      return message;
+    });
+    this.setData({ "room.messages": messages });
   },
 
   toggleFlash() {
@@ -520,7 +704,7 @@ Page({
   },
 
   appendMessage(message) {
-    const nextMessage = this.prepareFlashMessage(message);
+    const nextMessage = this.prepareDisplayMessage(message);
     this.setData({
       "room.messages": [...this.data.room.messages, nextMessage]
     });
@@ -541,8 +725,22 @@ Page({
     }
     return {
       ...room,
-      messages: room.messages.map((message) => this.prepareFlashMessage(message))
+      messages: room.messages.map((message) => this.prepareDisplayMessage(message))
     };
+  },
+
+  prepareDisplayMessage(message) {
+    const nextMessage = this.prepareFlashMessage(message);
+    if (nextMessage && nextMessage.quote && !nextMessage.quote.summary) {
+      return {
+        ...nextMessage,
+        quote: {
+          ...nextMessage.quote,
+          summary: this.getQuoteSummary(nextMessage.quote)
+        }
+      };
+    }
+    return nextMessage;
   },
 
   prepareFlashMessage(message) {
