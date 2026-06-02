@@ -6,6 +6,37 @@ const adminProfile = {
   visibleToUsers: true
 }
 
+const avatarColors = ['#3b82f6', '#14b8a6', '#f97316', '#8b5cf6', '#ec4899', '#06b6d4', '#22c55e', '#f59e0b']
+
+function hashText(value = '') {
+  return String(value).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)
+}
+
+function isAvatarImage(value = '') {
+  return /^(https?:|wxfile:|cloud:|\/)/.test(String(value || ''))
+}
+
+function decorateMemberAvatar(member = {}) {
+  const rawAvatar = member.avatarUrl || member.avatar_url || (isAvatarImage(member.avatar) ? member.avatar : '')
+  const fallbackText = !rawAvatar && member.avatar && !isAvatarImage(member.avatar)
+    ? member.avatar
+    : (member.name || '?').slice(0, 1).toUpperCase()
+  const seed = member.memberId || member.id || member.name || rawAvatar || fallbackText
+  return {
+    ...member,
+    avatarUrl: rawAvatar,
+    avatarText: member.avatarText || fallbackText,
+    avatarColor: avatarColors[hashText(seed) % avatarColors.length]
+  }
+}
+
+function decorateTableAvatars(table = {}) {
+  return {
+    ...table,
+    members: (table.members || []).map(decorateMemberAvatar)
+  }
+}
+
 function defaultStartsAt() {
   const date = new Date(Date.now() + 2 * 60 * 60 * 1000)
   const year = date.getFullYear()
@@ -178,6 +209,7 @@ Page({
     filter: 'all',
     copiedText: '',
     refreshing: false,
+    theme: getApp().getTheme ? getApp().getTheme() : 'dark',
     invitePanelVisible: false,
     inviteLoading: false,
     inviteInfo: {
@@ -191,6 +223,8 @@ Page({
   },
 
   onLoad(options = {}) {
+    this.pageUnloaded = false
+    this.actionLocks = {}
     const nextData = {}
     if (options.partyId) {
       nextData.partyId = options.partyId
@@ -209,6 +243,69 @@ Page({
     })
     this.updateSelected(this.data.selectedId)
     this.updateSafeArea()
+  },
+
+  onShow() {
+    const app = getApp()
+    this.setData({ theme: app.getTheme ? app.getTheme() : 'dark' })
+  },
+
+  onUnload() {
+    this.pageUnloaded = true
+    clearTimeout(this.copyTimer)
+    clearTimeout(this.refreshResetTimer)
+    this.copyTimer = null
+    this.refreshResetTimer = null
+    this.actionLocks = {}
+  },
+
+  toggleTheme() {
+    const app = getApp()
+    const theme = app.toggleTheme ? app.toggleTheme() : 'dark'
+    this.lightFeedback()
+    this.setData({ theme })
+  },
+
+  lightFeedback(type = 'light') {
+    if (!wx.vibrateShort) {
+      return
+    }
+    try {
+      wx.vibrateShort({ type })
+    } catch (error) {
+      try {
+        wx.vibrateShort()
+      } catch (fallbackError) {
+        console.warn('轻触反馈不可用', fallbackError)
+      }
+    }
+  },
+
+  setDataIfAlive(data) {
+    if (this.pageUnloaded) {
+      return false
+    }
+    this.setData(data)
+    return true
+  },
+
+  showToastIfAlive(options) {
+    if (!this.pageUnloaded) {
+      wx.showToast(options)
+    }
+  },
+
+  runLockedAction(key, action) {
+    this.actionLocks = this.actionLocks || {}
+    if (this.actionLocks[key]) {
+      return Promise.resolve(false)
+    }
+    this.actionLocks[key] = true
+    return Promise.resolve()
+      .then(action)
+      .finally(() => {
+        delete this.actionLocks[key]
+      })
   },
 
   updateSafeArea() {
@@ -241,8 +338,11 @@ Page({
             : api.adminLogin(this.data.adminId, res.code)
 
           loginRequest.then((loginRes) => {
+            if (this.pageUnloaded) {
+              return
+            }
             if (loginRes && loginRes.token) {
-              this.setData({
+              this.setDataIfAlive({
                 adminKey: `token:${loginRes.token}`,
                 adminProfile: {
                   ...this.data.adminProfile,
@@ -254,7 +354,7 @@ Page({
               })
             }
           }).catch(() => {
-            wx.showToast({ title: '管理员登录失败', icon: 'none' })
+            this.showToastIfAlive({ title: '管理员登录失败', icon: 'none' })
           }).finally(resolve)
         },
         fail: resolve
@@ -263,29 +363,39 @@ Page({
   },
 
   async loadDashboard() {
+    if (this.pageUnloaded) {
+      return
+    }
     try {
       const dashboard = await api.getAdminDashboard(this.data.partyId, this.data.adminId, this.data.adminKey)
+      if (this.pageUnloaded) {
+        return
+      }
       if (!dashboard) {
         this.recalculate(mockTables)
         return
       }
 
+      const tables = (dashboard.tables || []).map(decorateTableAvatars)
       this.setData({
-        tables: dashboard.tables,
+        tables,
         adminProfile: dashboard.adminProfile,
         currentParty: dashboard.party || null,
         wechatDraft: dashboard.adminProfile.wechatId,
-        selectedId: dashboard.tables[0] ? dashboard.tables[0].id : '',
-        selectedTable: dashboard.tables[0] || null
+        selectedId: tables[0] ? tables[0].id : '',
+        selectedTable: tables[0] || null
       })
-      this.recalculate(dashboard.tables)
+      this.recalculate(tables)
       this.loadReports()
     } catch (error) {
+      if (this.pageUnloaded) {
+        return
+      }
       this.recalculate(this.data.tables)
       const message = error && error.message === '管理员密钥无效'
         ? '管理员未授权，请带 adminKey 进入'
         : '后端暂不可用，显示本地数据'
-      wx.showToast({ title: message, icon: 'none' })
+      this.showToastIfAlive({ title: message, icon: 'none' })
     }
   },
 
@@ -297,13 +407,13 @@ Page({
   async saveAdminWechat() {
     const wechatId = this.data.wechatDraft.trim()
     if (!wechatId) {
-      wx.showToast({ title: '微信号不能为空', icon: 'none' })
+      this.showToastIfAlive({ title: '微信号不能为空', icon: 'none' })
       return
     }
     if (this.data.wechatSaving) {
       return
     }
-    this.setData({ wechatSaving: true })
+    this.setDataIfAlive({ wechatSaving: true })
     try {
       const res = await api.updateAdminProfile({
         adminId: this.data.adminId,
@@ -311,20 +421,27 @@ Page({
         displayName: this.data.adminProfile.name,
         wechatId
       })
-      this.setData({
+      if (this.pageUnloaded) {
+        return
+      }
+      this.setDataIfAlive({
         adminProfile: res.adminProfile,
         wechatDraft: res.adminProfile.wechatId
       })
       this.setTransientCopy('admin_wechat_saved')
     } catch (error) {
-      wx.showToast({ title: '保存失败', icon: 'none' })
+      this.showToastIfAlive({ title: '保存失败', icon: 'none' })
     } finally {
-      this.setData({ wechatSaving: false })
+      this.setDataIfAlive({ wechatSaving: false })
     }
   },
 
   onCreateFormInput(event) {
-    const { field } = event.currentTarget.dataset
+    const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
+    const { field } = dataset
+    if (!field) {
+      return
+    }
     const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail
     this.setData({
       [`createForm.${field}`]: value || ''
@@ -333,12 +450,12 @@ Page({
 
   chooseBarLocation() {
     if (!wx.chooseLocation) {
-      wx.showToast({ title: '当前环境不支持定位选点', icon: 'none' })
+      this.showToastIfAlive({ title: '当前环境不支持定位选点', icon: 'none' })
       return
     }
     wx.chooseLocation({
       success: (res) => {
-        this.setData({
+        this.setDataIfAlive({
           'createForm.barName': res.name || this.data.createForm.barName,
           'createForm.barAddress': res.address || res.name || this.data.createForm.barAddress,
           'createForm.latitude': res.latitude || '',
@@ -346,10 +463,11 @@ Page({
         })
       },
       fail: (error) => {
-        if (error && /cancel/i.test(error.errMsg || '')) {
+        const message = error && error.errMsg || ''
+        if (/cancel|auth deny|authorize no response|chooseLocation:fail/i.test(message)) {
           return
         }
-        wx.showToast({ title: '选点失败，请检查定位权限', icon: 'none' })
+        this.showToastIfAlive({ title: '无法选点', icon: 'none' })
       }
     })
   },
@@ -367,33 +485,36 @@ Page({
       capacity: Number(this.data.createForm.capacity || 0)
     }
     if (!form.title || !form.tableNo || !form.startsAt || !form.barAddress) {
-      wx.showToast({ title: '请补全局名、桌号、时间和地址', icon: 'none' })
+      this.showToastIfAlive({ title: '请补全局名、桌号、时间和地址', icon: 'none' })
       return
     }
     if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(form.startsAt)) {
-      wx.showToast({ title: '时间格式如 2026-06-02 21:00', icon: 'none' })
+      this.showToastIfAlive({ title: '时间格式如 2026-06-02 21:00', icon: 'none' })
       return
     }
     if (!form.latitude || !form.longitude) {
-      wx.showToast({ title: '请点“地图选点”确认位置', icon: 'none' })
+      this.showToastIfAlive({ title: '请点“地图选点”确认位置', icon: 'none' })
       return
     }
     if (!form.capacity || form.capacity < 1 || form.capacity > 99) {
-      wx.showToast({ title: '人数需在 1-99 之间', icon: 'none' })
+      this.showToastIfAlive({ title: '人数需在 1-99 之间', icon: 'none' })
       return
     }
     if (this.data.creatingParty) {
       return
     }
-    this.setData({ creatingParty: true })
+    this.setDataIfAlive({ creatingParty: true })
     try {
       const res = await api.createAdminParty({
         ...form,
         adminId: this.data.adminId,
         adminKey: this.data.adminKey
       })
-      const tables = res.tables || []
-      this.setData({
+      if (this.pageUnloaded) {
+        return
+      }
+      const tables = (res.tables || []).map(decorateTableAvatars)
+      this.setDataIfAlive({
         partyId: res.party ? res.party.id : this.data.partyId,
         currentParty: res.party || null,
         tables,
@@ -405,9 +526,9 @@ Page({
       this.recalculate(tables)
       this.setTransientCopy('party_created')
     } catch (error) {
-      wx.showToast({ title: '创建失败', icon: 'none' })
+      this.showToastIfAlive({ title: '创建失败', icon: 'none' })
     } finally {
-      this.setData({ creatingParty: false })
+      this.setDataIfAlive({ creatingParty: false })
     }
   },
 
@@ -425,15 +546,18 @@ Page({
         if (!res.confirm) {
           return
         }
-        this.setData({ endingParty: true })
+        this.setDataIfAlive({ endingParty: true })
         try {
           const result = await api.endAdminParty(partyId, this.data.adminId, this.data.adminKey)
+          if (this.pageUnloaded) {
+            return
+          }
           const tables = result.tables && result.tables.length ? result.tables : this.data.tables.map((table) => ({
             ...table,
             status: 'ended',
             statusText: '已结束'
           }))
-          this.setData({
+          this.setDataIfAlive({
             tables,
             currentParty: result.party || {
               ...this.data.currentParty,
@@ -443,11 +567,11 @@ Page({
           })
           this.updateSelected(this.data.selectedId)
           this.recalculate(tables)
-          wx.showToast({ title: '已解散', icon: 'success' })
+          this.showToastIfAlive({ title: '已解散', icon: 'success' })
         } catch (error) {
-          wx.showToast({ title: error.message || '解散失败', icon: 'none' })
+          this.showToastIfAlive({ title: error.message || '解散失败', icon: 'none' })
         } finally {
-          this.setData({ endingParty: false })
+          this.setDataIfAlive({ endingParty: false })
         }
       }
     })
@@ -471,7 +595,7 @@ Page({
   deleteSelectedEndedParties() {
     const partyIds = this.data.selectedEndedPartyIds
     if (!partyIds.length || this.data.deletingParties) {
-      wx.showToast({ title: '请选择已结束的局', icon: 'none' })
+      this.showToastIfAlive({ title: '请选择已结束的局', icon: 'none' })
       return
     }
     wx.showModal({
@@ -483,23 +607,26 @@ Page({
         if (!res.confirm) {
           return
         }
-        this.setData({ deletingParties: true })
+        this.setDataIfAlive({ deletingParties: true })
         try {
           await api.deleteEndedParties(partyIds, this.data.adminId, this.data.adminKey)
+          if (this.pageUnloaded) {
+            return
+          }
           const deleted = new Set(partyIds)
           const tables = this.data.tables.filter((table) => !deleted.has(table.partyId || this.data.partyId))
-          this.setData({
+          this.setDataIfAlive({
             tables,
             selectedEndedPartyIds: [],
             selectedId: tables[0] ? tables[0].id : '',
             selectedTable: tables[0] || null
           })
           this.recalculate(tables)
-          wx.showToast({ title: '已删除', icon: 'success' })
+          this.showToastIfAlive({ title: '已删除', icon: 'success' })
         } catch (error) {
-          wx.showToast({ title: error.message || '删除失败', icon: 'none' })
+          this.showToastIfAlive({ title: error.message || '删除失败', icon: 'none' })
         } finally {
-          this.setData({ deletingParties: false })
+          this.setDataIfAlive({ deletingParties: false })
         }
       }
     })
@@ -508,12 +635,24 @@ Page({
   selectTable(event) {
     const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
     const { id } = dataset
+    if (!id) {
+      return
+    }
+    if (id && id !== this.data.selectedId) {
+      this.lightFeedback()
+    }
     this.updateSelected(id)
   },
 
   setFilter(event) {
     const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
     const filter = dataset.filter || dataset.detail || (typeof event.detail === 'string' ? event.detail : '')
+    if (!filter) {
+      return
+    }
+    if (filter && filter !== this.data.filter) {
+      this.lightFeedback()
+    }
     const visibleTables = this.getVisibleTables(filter)
     this.setData({
       filter,
@@ -523,27 +662,27 @@ Page({
     })
   },
 
-  copyJoinCode() {
-    this.copyText(this.data.selectedTable.joinCode, '入局码已复制')
-  },
-
   copyJoinLink() {
     const table = this.data.selectedTable
     if (!table) {
       return
     }
-    api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then((invite) => {
-      if (!invite.urlLink) {
-        wx.showToast({ title: '入局链接暂未生成', icon: 'none' })
+    return this.runLockedAction(`copy_join_${table.id}`, () => api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then((invite) => {
+      if (this.pageUnloaded) {
         return
       }
-      this.copyText(invite.urlLink, '入局链接已复制')
+      const link = invite.urlLink || table.joinLink || ''
+      if (!link) {
+        this.showToastIfAlive({ title: '入局链接暂未生成', icon: 'none' })
+        return
+      }
+      this.copyText(link, '入局链接已复制', 'join_link')
     }).catch((error) => {
       const message = error && error.message === '管理员密钥无效'
         ? '管理员未授权，请带 adminKey 进入'
         : '入局链接生成失败'
-      wx.showToast({ title: message, icon: 'none' })
-    })
+      this.showToastIfAlive({ title: message, icon: 'none' })
+    }))
   },
 
   copyAdminWechat() {
@@ -634,17 +773,22 @@ Page({
     if (!memberId) {
       return
     }
-    try {
-      const result = await api.setMemberSeat(memberId, 'seated', this.data.adminKey)
-      if (result.table) {
-        this.replaceTable(result.table)
-      } else {
-        this.updateMemberStatus(memberId, 'seated')
+    return this.runLockedAction(`seat_${memberId}`, async () => {
+      try {
+        const result = await api.setMemberSeat(memberId, 'seated', this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        if (result.table) {
+          this.replaceTable(result.table)
+        } else {
+          this.updateMemberStatus(memberId, 'seated')
+        }
+        this.setTransientCopy(`seat_${memberId}`)
+      } catch (error) {
+        this.showToastIfAlive({ title: '设置失败', icon: 'none' })
       }
-      this.setTransientCopy(`seat_${memberId}`)
-    } catch (error) {
-      wx.showToast({ title: '设置失败', icon: 'none' })
-    }
+    })
   },
 
   async setTableHead(memberId) {
@@ -652,13 +796,18 @@ Page({
     if (!table || !memberId) {
       return
     }
-    try {
-      await api.setTableHead(table.id, memberId, this.data.adminKey)
-      this.updateTableHead(table.id, memberId)
-      wx.showToast({ title: '已设为局头', icon: 'success' })
-    } catch (error) {
-      wx.showToast({ title: '设置局头失败', icon: 'none' })
-    }
+    return this.runLockedAction(`head_${table.id}_${memberId}`, async () => {
+      try {
+        await api.setTableHead(table.id, memberId, this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        this.updateTableHead(table.id, memberId)
+        this.showToastIfAlive({ title: '已设为局头', icon: 'success' })
+      } catch (error) {
+        this.showToastIfAlive({ title: '设置局头失败', icon: 'none' })
+      }
+    })
   },
 
   async clearTableHead() {
@@ -666,13 +815,18 @@ Page({
     if (!table) {
       return
     }
-    try {
-      await api.setTableHead(table.id, '', this.data.adminKey)
-      this.updateTableHead(table.id, '')
-      wx.showToast({ title: '已取消局头', icon: 'success' })
-    } catch (error) {
-      wx.showToast({ title: '取消失败', icon: 'none' })
-    }
+    return this.runLockedAction(`head_clear_${table.id}`, async () => {
+      try {
+        await api.setTableHead(table.id, '', this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        this.updateTableHead(table.id, '')
+        this.showToastIfAlive({ title: '已取消局头', icon: 'success' })
+      } catch (error) {
+        this.showToastIfAlive({ title: '取消失败', icon: 'none' })
+      }
+    })
   },
 
   async kickMember(event) {
@@ -689,13 +843,18 @@ Page({
         if (!res.confirm) {
           return
         }
-        try {
-          await api.kickMember(memberId, this.data.adminKey)
-          this.removeMember(memberId)
-          wx.showToast({ title: '已移除', icon: 'success' })
-        } catch (error) {
-          wx.showToast({ title: '移除失败', icon: 'none' })
-        }
+        this.runLockedAction(`kick_${memberId}`, async () => {
+          try {
+            await api.kickMember(memberId, this.data.adminKey)
+            if (this.pageUnloaded) {
+              return
+            }
+            this.removeMember(memberId)
+            this.showToastIfAlive({ title: '已移除', icon: 'success' })
+          } catch (error) {
+            this.showToastIfAlive({ title: '移除失败', icon: 'none' })
+          }
+        })
       }
     })
   },
@@ -708,17 +867,24 @@ Page({
   },
 
   async loadReports(status = this.data.reportFilter) {
-    if (!this.data.partyId) {
+    if (!this.data.partyId || this.pageUnloaded) {
       return
     }
     this.setData({ reportLoading: true })
     try {
       const reports = await api.getAdminReports(this.data.partyId, status, this.data.adminId, this.data.adminKey)
+      if (this.pageUnloaded) {
+        return
+      }
       this.setData({ reports })
     } catch (error) {
-      console.warn('举报列表加载失败', error)
+      if (!this.pageUnloaded) {
+        console.warn('举报列表加载失败', error)
+      }
     } finally {
-      this.setData({ reportLoading: false })
+      if (!this.pageUnloaded) {
+        this.setData({ reportLoading: false })
+      }
     }
   },
 
@@ -727,24 +893,37 @@ Page({
     if (!messageId) {
       return
     }
-    try {
-      await api.deleteMessage(messageId, '违规内容', this.data.adminId, this.data.adminKey)
-      wx.showToast({ title: '消息已删除', icon: 'success' })
-      this.loadDashboard()
-    } catch (error) {
-      wx.showToast({ title: error.message || '删除失败', icon: 'none' })
-    }
+    return this.runLockedAction(`delete_message_${messageId}`, async () => {
+      try {
+        await api.deleteMessage(messageId, '违规内容', this.data.adminId, this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        this.showToastIfAlive({ title: '消息已删除', icon: 'success' })
+        this.loadDashboard()
+      } catch (error) {
+        this.showToastIfAlive({ title: error.message || '删除失败', icon: 'none' })
+      }
+    })
   },
 
   async resolveReport(event) {
     const { reportId, status } = event.currentTarget.dataset
-    try {
-      await api.resolveReport(reportId, status, this.data.adminId, this.data.adminKey)
-      wx.showToast({ title: status === 'resolved' ? '已处理' : '已驳回', icon: 'success' })
-      this.loadReports()
-    } catch (error) {
-      wx.showToast({ title: error.message || '处理失败', icon: 'none' })
+    if (!reportId || !status) {
+      return
     }
+    return this.runLockedAction(`report_${reportId}_${status}`, async () => {
+      try {
+        await api.resolveReport(reportId, status, this.data.adminId, this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        this.showToastIfAlive({ title: status === 'resolved' ? '已处理' : '已驳回', icon: 'success' })
+        this.loadReports()
+      } catch (error) {
+        this.showToastIfAlive({ title: error.message || '处理失败', icon: 'none' })
+      }
+    })
   },
 
   async banReportUser(event) {
@@ -775,14 +954,19 @@ Page({
         if (!res.confirm) {
           return
         }
-        try {
-          await api.banUser(userId, '违规使用', this.data.partyId, this.data.adminId, this.data.adminKey)
-          this.updateMemberBanState(userId, true, '违规使用')
-          wx.showToast({ title: '已封禁', icon: 'success' })
-          this.loadReports()
-        } catch (error) {
-          wx.showToast({ title: error.message || '封禁失败', icon: 'none' })
-        }
+        this.runLockedAction(`ban_${userId}`, async () => {
+          try {
+            await api.banUser(userId, '违规使用', this.data.partyId, this.data.adminId, this.data.adminKey)
+            if (this.pageUnloaded) {
+              return
+            }
+            this.updateMemberBanState(userId, true, '违规使用')
+            this.showToastIfAlive({ title: '已封禁', icon: 'success' })
+            this.loadReports()
+          } catch (error) {
+            this.showToastIfAlive({ title: error.message || '封禁失败', icon: 'none' })
+          }
+        })
       }
     })
   },
@@ -791,14 +975,19 @@ Page({
     if (!userId) {
       return
     }
-    try {
-      await api.unbanUser(userId, this.data.partyId, this.data.adminId, this.data.adminKey)
-      this.updateMemberBanState(userId, false, '')
-      wx.showToast({ title: name ? `已解除 ${name}` : '已解除封禁', icon: 'success' })
-      this.loadReports()
-    } catch (error) {
-      wx.showToast({ title: error.message || '解除失败', icon: 'none' })
-    }
+    return this.runLockedAction(`unban_${userId}`, async () => {
+      try {
+        await api.unbanUser(userId, this.data.partyId, this.data.adminId, this.data.adminKey)
+        if (this.pageUnloaded) {
+          return
+        }
+        this.updateMemberBanState(userId, false, '')
+        this.showToastIfAlive({ title: name ? `已解除 ${name}` : '已解除封禁', icon: 'success' })
+        this.loadReports()
+      } catch (error) {
+        this.showToastIfAlive({ title: error.message || '解除失败', icon: 'none' })
+      }
+    })
   },
 
   showJoinInfo() {
@@ -806,59 +995,70 @@ Page({
     if (!table) {
       return
     }
-    this.setData({
-      invitePanelVisible: true,
-      inviteLoading: true,
-      inviteInfo: {
-        tableNo: table.tableNo,
-        scene: table.joinCode,
-        link: '',
-        qrcodePath: '',
-        error: ''
-      }
-    })
-    api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then(async (invite) => {
-      const link = invite.urlLink || ''
-      let qrcodePath = ''
-      try {
-        qrcodePath = await api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey)
-      } catch (error) {
-        console.warn('小程序码下载失败', error)
-      }
+    return this.runLockedAction(`invite_${table.id}`, () => {
       this.setData({
-        inviteInfo: {
-          tableNo: table.tableNo,
-          scene: invite.scene,
-          link,
-          qrcodePath,
-          error: qrcodePath || link ? '' : '小程序码和链接暂未生成，请检查微信密钥和发布状态'
-        }
-      })
-    }).catch((error) => {
-      this.setData({
+        invitePanelVisible: true,
+        inviteLoading: true,
         inviteInfo: {
           tableNo: table.tableNo,
           scene: table.joinCode,
           link: '',
           qrcodePath: '',
-          error: error && error.message === '管理员密钥无效'
-            ? '管理员未授权，请带 adminKey 进入后再分享'
-            : '入局信息加载失败，请稍后重试'
+          error: ''
         }
       })
-    }).finally(() => {
-      this.setData({ inviteLoading: false })
+      return api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then(async (invite) => {
+        const link = invite.urlLink || ''
+        let qrcodePath = ''
+        try {
+          qrcodePath = await api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey)
+        } catch (error) {
+          console.warn('小程序码下载失败', error)
+        }
+        if (this.pageUnloaded) {
+          return
+        }
+        this.setData({
+          inviteInfo: {
+            tableNo: table.tableNo,
+            scene: invite.scene,
+            link,
+            qrcodePath,
+            error: qrcodePath || link ? '' : '小程序码和链接暂未生成，请检查微信密钥和发布状态'
+          }
+        })
+      }).catch((error) => {
+        if (this.pageUnloaded) {
+          return
+        }
+        this.setData({
+          inviteInfo: {
+            tableNo: table.tableNo,
+            scene: table.joinCode,
+            link: '',
+            qrcodePath: '',
+            error: error && error.message === '管理员密钥无效'
+              ? '管理员未授权，请带 adminKey 进入后再分享'
+              : '入局信息加载失败，请稍后重试'
+          }
+        })
+      }).finally(() => {
+        if (!this.pageUnloaded) {
+          this.setData({ inviteLoading: false })
+        }
+      })
     })
   },
 
   closeInvitePanel() {
+    this.lightFeedback()
     this.setData({ invitePanelVisible: false })
   },
 
   copyInviteLink() {
     const info = this.data.inviteInfo || {}
     if (!info.link) {
-      wx.showToast({ title: '暂无可复制链接', icon: 'none' })
+      this.showToastIfAlive({ title: '暂无可复制链接', icon: 'none' })
       return
     }
     this.copyText(info.link, '入局链接已复制')
@@ -867,17 +1067,20 @@ Page({
   saveInviteQrcode() {
     const info = this.data.inviteInfo || {}
     if (!info.qrcodePath) {
-      wx.showToast({ title: '暂无小程序码', icon: 'none' })
+      this.showToastIfAlive({ title: '暂无小程序码', icon: 'none' })
       return
     }
     if (!wx.saveImageToPhotosAlbum) {
-      wx.showToast({ title: '当前环境不支持保存', icon: 'none' })
+      this.showToastIfAlive({ title: '当前环境不支持保存', icon: 'none' })
       return
     }
     wx.saveImageToPhotosAlbum({
       filePath: info.qrcodePath,
-      success: () => wx.showToast({ title: '小程序码已保存', icon: 'success' }),
-      fail: () => wx.showToast({ title: '保存失败，请检查相册权限', icon: 'none' })
+      success: () => {
+        this.lightFeedback()
+        this.showToastIfAlive({ title: '小程序码已保存', icon: 'success' })
+      },
+      fail: () => this.showToastIfAlive({ title: '保存失败，请检查相册权限', icon: 'none' })
     })
   },
 
@@ -886,6 +1089,7 @@ Page({
     if (!info.qrcodePath || !wx.previewImage) {
       return
     }
+    this.lightFeedback()
     wx.previewImage({
       urls: [info.qrcodePath],
       current: info.qrcodePath
@@ -899,10 +1103,19 @@ Page({
     if (this.data.refreshing) {
       return
     }
+    this.lightFeedback()
     this.setData({ refreshing: true })
     Promise.resolve(this.loadDashboard()).finally(() => {
-      setTimeout(() => {
+      if (this.pageUnloaded) {
+        return
+      }
+      clearTimeout(this.refreshResetTimer)
+      this.refreshResetTimer = setTimeout(() => {
+        if (this.pageUnloaded) {
+          return
+        }
         this.setData({ refreshing: false })
+        this.refreshResetTimer = null
       }, 420)
     })
   },
@@ -911,12 +1124,12 @@ Page({
     const selectedTable = this.data.tables.find((table) => table.id === id)
     this.setData({
       selectedId: id,
-      selectedTable: selectedTable || null
+      selectedTable: selectedTable ? decorateTableAvatars(selectedTable) : null
     })
   },
 
   recalculate(tables) {
-    const sourceTables = tables || this.data.tables
+    const sourceTables = (tables || this.data.tables).map(decorateTableAvatars)
     const visibleTables = this.filterTables(sourceTables, this.data.filter)
     const endedTableMap = new Map()
     sourceTables.forEach((table) => {
@@ -1081,21 +1294,42 @@ Page({
     return tables.filter((table) => table.status === filter)
   },
 
-  copyText(text, title) {
-    wx.setClipboardData({
-      data: text,
-      success: () => {
-        this.setTransientCopy(text)
-        console.info(title)
-      }
-    })
+  copyText(text, title, transientValue = text) {
+    if (!text) {
+      this.showToastIfAlive({ title: '暂无可复制内容', icon: 'none' })
+      return Promise.resolve(false)
+    }
+    return this.runLockedAction(`copy_${transientValue || title}`, () => new Promise((resolve) => {
+      wx.setClipboardData({
+        data: text,
+        success: () => {
+          if (this.pageUnloaded) {
+            return
+          }
+          this.lightFeedback()
+          this.setTransientCopy(transientValue)
+          console.info(title)
+        },
+        fail: () => {
+          this.showToastIfAlive({ title: '复制失败', icon: 'none' })
+        },
+        complete: resolve
+      })
+    }))
   },
 
   setTransientCopy(value) {
+    if (this.pageUnloaded) {
+      return
+    }
     this.setData({ copiedText: value })
     clearTimeout(this.copyTimer)
     this.copyTimer = setTimeout(() => {
+      if (this.pageUnloaded) {
+        return
+      }
       this.setData({ copiedText: '' })
+      this.copyTimer = null
     }, 1600)
   }
 })

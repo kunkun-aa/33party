@@ -1,6 +1,6 @@
 page {
   min-height: 100%;
-  color: #f5f0e8;
+  color: #f3f6fb;
   background: #0b0d12;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
 }
@@ -31,4 +31,31 @@ button::after {
 
 image {
   display: block;
+}
+
+.theme-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60rpx;
+  height: 60rpx;
+  color: var(--text-strong, #f4f6f8);
+  font-size: 30rpx;
+  font-weight: 900;
+  line-height: 60rpx;
+  background: var(--panel-soft, rgba(255, 255, 255, 0.08));
+  border: 1rpx solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 50%;
+  box-shadow: var(--shadow, 0 18rpx 60rpx rgba(0, 0, 0, 0.22));
+  transform: translate3d(0, 0, 0);
+  transition:
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.theme-toggle:active {
+  transform: scale(0.94);
 }

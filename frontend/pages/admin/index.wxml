@@ -1,18 +1,20 @@
-<view class="admin-page">
+<view class="admin-page theme-{{theme}}">
   <view class="ambient ambient-lime"></view>
   <view class="ambient ambient-cyan"></view>
 
   <view class="top-panel" style="margin-top: {{topSafeArea}}px;">
     <view class="top-row">
       <view>
-        <text class="eyebrow">Tonight Control</text>
         <view class="title">现场桌房总览</view>
-        <text class="sub-title">现场场控</text>
       </view>
-      <van-button custom-class="icon-button {{refreshing ? 'refreshing' : ''}}" custom-style="height: 52rpx; min-width: 132rpx; padding: 0 22rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 52rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 28rpx rgba(215, 251, 82, 0.22);" loading="{{refreshing}}" bind:click="refreshData">
-        <text class="refresh-icon">↻</text>
-        <text>{{refreshing ? '刷新中' : '刷新'}}</text>
-      </van-button>
+      <view class="top-actions">
+        <view class="icon-button icon-only {{refreshing ? 'refreshing' : ''}}" bindtap="refreshData" aria-label="刷新">
+          <t-icon name="refresh" size="28rpx" />
+        </view>
+        <view class="theme-toggle" bindtap="toggleTheme" aria-label="切换主题">
+          <t-icon name="{{theme === 'dark' ? 'moon' : 'sunny'}}" size="28rpx" />
+        </view>
+      </view>
     </view>
 
     <view class="metrics">
@@ -36,66 +38,82 @@
   </view>
 
   <view class="filter-tabs">
-    <van-button custom-class="filter-tab {{filter === 'all' ? 'active' : ''}}" custom-style="{{filter === 'all' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="all" dataset="all" bind:click="setFilter">全部</van-button>
-    <van-button custom-class="filter-tab {{filter === 'available' ? 'active' : ''}}" custom-style="{{filter === 'available' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="available" dataset="available" bind:click="setFilter">人数未满</van-button>
-    <van-button custom-class="filter-tab {{filter === 'full' ? 'active' : ''}}" custom-style="{{filter === 'full' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="full" dataset="full" bind:click="setFilter">人数已满</van-button>
-    <van-button custom-class="filter-tab {{filter === 'attention' ? 'active' : ''}}" custom-style="{{filter === 'attention' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="attention" dataset="attention" bind:click="setFilter">需关注</van-button>
-    <van-button custom-class="filter-tab {{filter === 'ended' ? 'active' : ''}}" custom-style="{{filter === 'ended' ? 'height: 58rpx; padding: 0 10rpx; color: #08100b; font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: linear-gradient(135deg, #e8ff82, #d7fb52); border: 0; border-radius: 999rpx; box-shadow: 0 0 26rpx rgba(215, 251, 82, 0.2);' : 'height: 58rpx; padding: 0 10rpx; color: rgba(235, 242, 247, 0.86); font-size: 22rpx; font-weight: 900; line-height: 58rpx; background: rgba(255, 255, 255, 0.07); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;'}}" data-filter="ended" dataset="ended" bind:click="setFilter">已结束</van-button>
+    <view class="filter-tab {{filter === 'all' ? 'active' : ''}}" data-filter="all" bindtap="setFilter">全部</view>
+    <view class="filter-tab {{filter === 'available' ? 'active' : ''}}" data-filter="available" bindtap="setFilter">人数未满</view>
+    <view class="filter-tab {{filter === 'full' ? 'active' : ''}}" data-filter="full" bindtap="setFilter">人数已满</view>
+    <view class="filter-tab {{filter === 'attention' ? 'active' : ''}}" data-filter="attention" bindtap="setFilter">需关注</view>
+    <view class="filter-tab {{filter === 'ended' ? 'active' : ''}}" data-filter="ended" bindtap="setFilter">已结束</view>
   </view>
 
   <view class="ops-panel">
     <view class="ops-card">
       <view class="ops-head">
         <view>
-          <text class="muted">管理员微信</text>
-          <text class="ops-title">用户端微信</text>
+          <view class="ops-icon-title">
+            <t-icon name="user" size="28rpx" />
+            <text class="ops-title">管理员微信</text>
+          </view>
         </view>
-        <van-button custom-class="ops-button {{copiedText === 'admin_wechat_saved' ? 'copied' : ''}}" custom-style="width: 132rpx; height: 50rpx; padding: 0; color: #d7fb52; font-size: 22rpx; font-weight: 900; line-height: 50rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" loading="{{wechatSaving}}" bind:click="saveAdminWechat">
-          {{copiedText === 'admin_wechat_saved' ? '✓ 已保存' : '保存'}}
-        </van-button>
+        <view class="ops-button icon-submit {{copiedText === 'admin_wechat_saved' ? 'copied' : ''}} {{wechatSaving ? 'loading' : ''}}" bindtap="saveAdminWechat" aria-label="保存管理员微信">
+          <t-icon name="{{copiedText === 'admin_wechat_saved' ? 'check' : 'save'}}" size="28rpx" />
+        </view>
       </view>
-      <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 12rpx; padding: 0 18rpx; min-height: 64rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 64rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" value="{{wechatDraft}}" bind:input="onWechatDraftInput" placeholder="输入管理员微信号" border="{{false}}" />
+      <t-input t-class="ops-input" t-class-input="ops-input-control" value="{{wechatDraft}}" bind:change="onWechatDraftInput" placeholder="输入管理员微信号" placeholder-class="ops-placeholder" borderless />
     </view>
 
     <view class="ops-card create-card">
       <view class="ops-head">
         <view>
-          <text class="muted">创建新局</text>
-          <text class="ops-title">填写局信息</text>
+          <view class="ops-icon-title">
+            <t-icon name="add-circle" size="28rpx" />
+            <text class="ops-title">创建新局</text>
+          </view>
         </view>
-        <van-button custom-class="ops-button {{copiedText === 'party_created' ? 'copied' : ''}}" custom-style="width: 132rpx; height: 50rpx; padding: 0; color: #d7fb52; font-size: 22rpx; font-weight: 900; line-height: 50rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" loading="{{creatingParty}}" bind:click="createParty">
-          {{copiedText === 'party_created' ? '✓ 已创建' : '创建'}}
-        </van-button>
+        <view class="ops-button icon-submit {{copiedText === 'party_created' ? 'copied' : ''}} {{creatingParty ? 'loading' : ''}}" bindtap="createParty" aria-label="创建新局">
+          <t-icon name="{{copiedText === 'party_created' ? 'check' : 'check-circle'}}" size="28rpx" />
+        </view>
       </view>
       <view class="create-form">
         <view class="form-item">
-          <text class="field-label">局名称</text>
-          <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="title" value="{{createForm.title}}" bind:input="onCreateFormInput" placeholder="例：周六拼台主局" border="{{false}}" />
+          <view class="field-shell">
+            <t-icon name="flag" size="24rpx" />
+            <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="title" value="{{createForm.title}}" bind:change="onCreateFormInput" placeholder="局名称" placeholder-class="ops-placeholder" borderless />
+          </view>
         </view>
         <view class="form-row">
           <view class="form-item">
-            <text class="field-label">桌号 / 房号</text>
-            <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="tableNo" value="{{createForm.tableNo}}" bind:input="onCreateFormInput" placeholder="A01" border="{{false}}" />
+            <view class="field-shell">
+              <t-icon name="location" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="tableNo" value="{{createForm.tableNo}}" bind:change="onCreateFormInput" placeholder="桌号 / 房号" placeholder-class="ops-placeholder" borderless />
+            </view>
           </view>
           <view class="form-item form-item-small">
-            <text class="field-label">人数</text>
-            <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="capacity" type="number" value="{{createForm.capacity}}" bind:input="onCreateFormInput" placeholder="8" border="{{false}}" />
+            <view class="field-shell">
+              <t-icon name="user" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" type="number" data-field="capacity" value="{{createForm.capacity}}" bind:change="onCreateFormInput" placeholder="人数" placeholder-class="ops-placeholder" borderless />
+            </view>
           </view>
         </view>
         <view class="form-item">
-          <text class="field-label">开局时间</text>
-          <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="startsAt" value="{{createForm.startsAt}}" bind:input="onCreateFormInput" placeholder="2026-06-02 21:00" border="{{false}}" />
-        </view>
-        <view class="form-item">
-          <text class="field-label">酒吧名称</text>
-          <van-field custom-class="ops-input" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="barName" value="{{createForm.barName}}" bind:input="onCreateFormInput" placeholder="例：33 Party Lounge" border="{{false}}" />
-        </view>
-        <view class="form-item">
-          <view class="field-title-row">
-            <text class="field-label">详细地址</text>
-            <button class="mini-action location-action" bindtap="chooseBarLocation">地图选点</button>
+          <view class="field-shell">
+            <t-icon name="time" size="24rpx" />
+            <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="startsAt" value="{{createForm.startsAt}}" bind:change="onCreateFormInput" placeholder="2026-06-02 21:00" placeholder-class="ops-placeholder" borderless />
           </view>
-          <van-field custom-class="ops-input full" input-class="ops-input-control" custom-style="margin-top: 8rpx; padding: 0 18rpx; min-height: 62rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.14); border-radius: 16rpx; color: #f7fbff; --cell-line-height: 62rpx; --field-input-text-color: #f7fbff; --field-placeholder-text-color: rgba(235, 242, 247, 0.52);" placeholder-style="color: rgba(235, 242, 247, 0.52);" data-field="barAddress" value="{{createForm.barAddress}}" bind:input="onCreateFormInput" placeholder="街道 / 商圈 / 门店地址" border="{{false}}" />
+        </view>
+        <view class="form-item">
+          <view class="field-shell">
+            <t-icon name="shop" size="24rpx" />
+            <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="barName" value="{{createForm.barName}}" bind:change="onCreateFormInput" placeholder="酒吧名称" placeholder-class="ops-placeholder" borderless />
+          </view>
+        </view>
+        <view class="form-item">
+          <view class="field-shell address-shell">
+            <t-icon name="map-location" size="24rpx" />
+            <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="barAddress" value="{{createForm.barAddress}}" bind:change="onCreateFormInput" placeholder="详细地址" placeholder-class="ops-placeholder" borderless />
+            <view class="location-action icon-only" bindtap="chooseBarLocation" aria-label="地图选点">
+              <t-icon name="{{createForm.latitude && createForm.longitude ? 'check' : 'map-search'}}" size="24rpx" />
+            </view>
+          </view>
           <text class="location-state">{{createForm.latitude && createForm.longitude ? '已确认地图坐标' : '用户端地图需要先确认坐标'}}</text>
         </view>
       </view>
@@ -105,7 +123,6 @@
   <view class="reports-panel">
     <view class="reports-head">
       <view>
-        <text class="muted">投诉举报</text>
         <text class="ops-title">举报处理</text>
       </view>
       <text class="report-count" wx:if="{{reportLoading}}">加载中</text>
@@ -170,10 +187,9 @@
 
   <view class="ended-panel" wx:if="{{endedTables.length}}">
     <view class="reports-head">
-      <view>
-        <text class="muted">已结束局</text>
-        <text class="ops-title">多选删除</text>
-      </view>
+        <view>
+          <text class="ops-title">已结束局</text>
+        </view>
       <button class="mini-action danger" bindtap="deleteSelectedEndedParties">{{deletingParties ? '删除中' : '删除选中'}}</button>
     </view>
     <view class="ended-list">
@@ -206,7 +222,7 @@
               <text class="table-no">{{item.title || currentParty.title || createForm.title}}</text>
               <text class="room-name">{{item.tableNo}}</text>
             </view>
-            <van-tag custom-class="status-pill {{item.status}}" round>{{item.statusText}}</van-tag>
+            <text class="status-pill {{item.status}}">{{item.statusText}}</text>
           </view>
 
           <view class="card-main">
@@ -226,7 +242,7 @@
 
           <view class="seat-line">
             <view class="seat-progress">
-              <view class="seat-progress-fill" style="width: {{item.capacity ? item.memberCount * 100 / item.capacity : 0}}%;"></view>
+              <view class="seat-progress-fill" style="transform: scaleX({{item.capacity ? item.memberCount / item.capacity : 0}});"></view>
             </view>
             <text>占位 {{item.memberCount}}/{{item.capacity}}</text>
             <text class="{{(item.ghostCount || 0) > 0 ? 'attention-text' : ''}}">未占位 {{item.ghostCount || 0}}</text>
@@ -234,7 +250,13 @@
 
           <view class="avatars">
             <block wx:for="{{item.members}}" wx:for-item="member" wx:key="name">
-              <view class="avatar {{member.online ? 'online' : ''}}">{{member.avatar}}</view>
+              <t-avatar
+                t-class="avatar {{member.online ? 'online' : ''}}"
+                size="52rpx"
+                shape="round"
+                image="{{member.avatarUrl}}"
+                custom-style="background: {{member.avatarColor}}; color: #ffffff;"
+              >{{member.avatarText}}</t-avatar>
             </block>
           </view>
 
@@ -253,8 +275,10 @@
           <view class="detail-title">{{selectedTable.title || currentParty.title || createForm.title}}</view>
         </view>
         <view class="detail-actions">
-          <van-tag custom-class="status-pill {{selectedTable.status}}" round>{{selectedTable.memberCount}}/{{selectedTable.capacity}}</van-tag>
-          <button wx:if="{{selectedTable.status !== 'ended'}}" class="mini-action danger detail-danger" bindtap="endCurrentParty">{{endingParty ? '处理中' : '解散'}}</button>
+          <text class="status-pill {{selectedTable.status}}">{{selectedTable.memberCount}}/{{selectedTable.capacity}}</text>
+          <view wx:if="{{selectedTable.status !== 'ended'}}" class="panel-icon-button danger {{endingParty ? 'loading' : ''}}" bindtap="endCurrentParty" aria-label="解散当前局">
+            <t-icon name="poweroff" size="24rpx" />
+          </view>
         </view>
       </view>
 
@@ -275,14 +299,17 @@
 
       <view class="join-box compact-action-box">
         <view>
-          <text class="muted">入局码</text>
-          <view class="join-code">{{selectedTable.joinCode}}</view>
+          <text class="muted">现场拉人</text>
+          <view class="join-code">小程序码优先</view>
+          <text class="join-hint">{{selectedTable.tableNo}} 让玩家扫码入局，链接备用</text>
         </view>
         <view class="join-actions">
-          <van-button custom-class="detail-button {{copiedText === selectedTable.joinCode ? 'copied' : ''}}" custom-style="width: 92rpx; height: 42rpx; padding: 0; color: #d7fb52; font-size: 19rpx; font-weight: 900; line-height: 42rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" bind:click="copyJoinCode">
-            {{copiedText === selectedTable.joinCode ? '已复制' : '复制'}}
-          </van-button>
-          <van-button custom-class="detail-button" custom-style="width: 92rpx; height: 42rpx; padding: 0; color: rgba(235, 242, 247, 0.92); font-size: 19rpx; font-weight: 900; line-height: 42rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.12); border-radius: 999rpx; box-shadow: none;" bind:click="showJoinInfo">展示</van-button>
+          <view class="panel-icon-button" bindtap="showJoinInfo" aria-label="打开小程序码">
+            <t-icon name="qrcode" size="28rpx" />
+          </view>
+          <view class="panel-icon-button {{copiedText === 'join_link' ? 'copied' : ''}}" bindtap="copyJoinLink" aria-label="复制链接">
+            <t-icon name="{{copiedText === 'join_link' ? 'check' : 'link'}}" size="28rpx" />
+          </view>
         </view>
       </view>
 
@@ -291,9 +318,9 @@
           <text class="muted">对用户可见的管理员微信</text>
           <view class="admin-wechat">{{adminProfile.wechatId}}</view>
         </view>
-        <van-button custom-class="detail-button {{copiedText === adminProfile.wechatId ? 'copied' : ''}}" custom-style="width: 92rpx; height: 42rpx; padding: 0; color: #d7fb52; font-size: 19rpx; font-weight: 900; line-height: 42rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.36); border-radius: 999rpx; box-shadow: none;" bind:click="copyAdminWechat">
-          {{copiedText === adminProfile.wechatId ? '已复制' : '复制'}}
-        </van-button>
+        <view class="panel-icon-button {{copiedText === adminProfile.wechatId ? 'copied' : ''}}" bindtap="copyAdminWechat" aria-label="复制管理员微信">
+          <t-icon name="{{copiedText === adminProfile.wechatId ? 'check' : 'copy'}}" size="28rpx" />
+        </view>
       </view>
 
       <view class="section-title">成员</view>
@@ -301,37 +328,52 @@
         <block wx:for="{{selectedTable.members}}" wx:for-item="member" wx:key="name">
           <view class="member-row contact-row">
             <view class="member-main">
-              <view class="avatar large {{member.online ? 'online' : ''}}">{{member.avatar}}</view>
+              <t-avatar
+                t-class="avatar large {{member.online ? 'online' : ''}}"
+                size="72rpx"
+                shape="round"
+                image="{{member.avatarUrl}}"
+                custom-style="background: {{member.avatarColor}}; color: #ffffff;"
+              >{{member.avatarText}}</t-avatar>
               <view class="member-meta">
                 <text class="member-name">{{member.name}}</text>
-                <text class="member-role">{{member.role}} · {{member.online ? '在线' : '离线'}} · {{member.seatStatusText || '未占位'}}</text>
+                <view class="member-status-icons">
+                  <view class="status-dot {{member.online ? 'online' : 'offline'}}"></view>
+                  <view class="status-icon {{member.seatStatus === 'seated' ? 'seated' : 'ghost'}}">
+                    <t-icon name="{{member.seatStatus === 'seated' ? 'check-circle' : 'user'}}" size="22rpx" />
+                  </view>
+                  <view class="status-icon gender {{member.gender}}">
+                    <t-icon name="{{member.gender === 'male' ? 'gender-male' : member.gender === 'female' ? 'gender-female' : 'user-unknown'}}" size="22rpx" color="{{member.gender === 'male' ? '#2f80ff' : member.gender === 'female' ? '#ec5f9d' : '#9aa4b2'}}" />
+                  </view>
+                  <view wx:if="{{selectedTable.headMemberId === member.memberId}}" class="status-icon head">
+                    <t-icon name="flag" size="22rpx" />
+                  </view>
+                </view>
                 <text class="ban-tag" wx:if="{{member.bannedAt}}">已封禁</text>
-                <text class="member-wechat">微信：{{member.wechatId}}</text>
+                <text class="member-wechat">{{member.wechatId}}</text>
               </view>
             </view>
             <view class="contact-actions">
-              <van-button
-                custom-class="primary-action {{copiedText === member.wechatId ? 'copied' : ''}}"
-                custom-style="width: 96rpx; height: 42rpx; padding: 0; color: #d7fb52; font-size: 18rpx; font-weight: 900; line-height: 42rpx; background: rgba(215, 251, 82, 0.1); border: 1rpx solid rgba(215, 251, 82, 0.32); border-radius: 999rpx; box-shadow: none;"
+              <button
+                class="primary-action {{copiedText === member.wechatId ? 'copied' : ''}}"
                 data-name="{{member.name}}"
                 data-wechat="{{member.wechatId}}"
-                bind:click="contactMember"
+                bindtap="contactMember"
               >
                 {{copiedText === member.wechatId ? '已复制' : '联系'}}
-              </van-button>
-              <van-button
-                custom-class="more-action"
-                custom-style="width: 96rpx; height: 42rpx; padding: 0; color: rgba(235, 242, 247, 0.9); font-size: 18rpx; font-weight: 900; line-height: 42rpx; background: rgba(255, 255, 255, 0.08); border: 1rpx solid rgba(255, 255, 255, 0.1); border-radius: 999rpx; box-shadow: none;"
+              </button>
+              <button
+                class="more-action"
                 data-member-id="{{member.memberId}}"
                 data-user-id="{{member.id}}"
                 data-name="{{member.name}}"
                 data-seat-status="{{member.seatStatus}}"
                 data-is-head="{{selectedTable.headMemberId === member.memberId}}"
                 data-banned="{{member.bannedAt ? 'true' : 'false'}}"
-                bind:click="openMemberActions"
+                bindtap="openMemberActions"
               >
                 管理
-              </van-button>
+              </button>
             </view>
           </view>
         </block>
@@ -339,12 +381,12 @@
     </view>
   </view>
 
-  <view class="invite-mask" wx:if="{{invitePanelVisible}}" catchtap="closeInvitePanel">
+  <view class="invite-mask" wx:if="{{invitePanelVisible}}" catchtap="closeInvitePanel" catchtouchmove="noop">
     <view class="invite-panel" catchtap="noop">
       <view class="invite-head">
         <view>
-          <text class="muted">入局分享</text>
-          <view class="invite-title">{{inviteInfo.tableNo}} 入局信息</view>
+          <text class="muted">扫码入局</text>
+          <view class="invite-title">{{inviteInfo.tableNo}} 小程序码</view>
         </view>
         <view class="invite-close" bindtap="closeInvitePanel">×</view>
       </view>
@@ -364,8 +406,8 @@
       </view>
 
       <view class="invite-actions">
-        <button class="invite-action secondary" bindtap="copyInviteLink">复制链接</button>
-        <button class="invite-action" bindtap="saveInviteQrcode">保存小程序码</button>
+        <t-button t-class="invite-action" bind:click="saveInviteQrcode">保存小程序码</t-button>
+        <t-button t-class="invite-action secondary" bind:click="copyInviteLink">复制链接备用</t-button>
       </view>
     </view>
   </view>

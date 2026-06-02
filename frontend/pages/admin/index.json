@@ -4,8 +4,9 @@
   "navigationBarTextStyle": "white",
   "backgroundColor": "#080B10",
   "usingComponents": {
-    "van-button": "../../vant/button/index",
-    "van-field": "../../vant/field/index",
-    "van-tag": "../../vant/tag/index"
+    "t-icon": "tdesign-miniprogram/icon/icon",
+    "t-button": "tdesign-miniprogram/button/button",
+    "t-input": "tdesign-miniprogram/input/input",
+    "t-avatar": "tdesign-miniprogram/avatar/avatar"
   }
 }

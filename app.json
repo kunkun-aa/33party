@@ -12,7 +12,7 @@
   },
   "permission": {
     "scope.userLocation": {
-      "desc": "用于管理员创建局时确认酒吧坐标，以及用户在房间内打开地图导航到现场地址"
+      "desc": "用于创建局和打开现场导航"
     }
   },
   "style": "v2",

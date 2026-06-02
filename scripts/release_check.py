@@ -40,7 +40,8 @@ def check_static_files() -> None:
     assert_true("connectRoomSocket" in room_js, "room page should connect websocket")
     assert_true("agreementAccepted" in room_js and "submitReport" in room_js, "room page should require agreement and support reports")
     assert_true("mediaPreview" in room_js and "wx.previewImage" not in room_js, "room page should use custom zoomable media preview")
-    assert_true("onChooseEmoji" in room_js and "wx.chooseMessageFile" in room_js, "room page should send WeChat-selected emoji images")
+    assert_true("wx.chooseMedia" in room_js, "room page should choose supported image and video media")
+    assert_true("onChooseEmoji" not in room_js and "wx.chooseMessageFile" not in room_js, "room page should not expose unsupported WeChat saved-emoji entry")
     assert_true("wx.chooseLocation" in admin_js, "admin create party should choose map location")
     assert_true("endCurrentParty" in admin_js and "deleteSelectedEndedParties" in admin_js, "admin page should end and delete ended parties")
     assert_true(
@@ -207,7 +208,7 @@ def run() -> int:
             [sys.executable, str(ROOT / "backend" / "server.py")],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             text=True,
         )

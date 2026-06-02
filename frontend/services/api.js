@@ -181,6 +181,7 @@ function normalizeProfile(profile = {}) {
 
 function normalizeMember(member = {}) {
   const name = member.nickname || member.nickName || member.name || "新朋友";
+  const avatarUrl = normalizeAvatarUrl(member.avatarUrl || member.avatar_url || member.avatar || "");
   return {
     id: member.id,
     memberId: member.memberId,
@@ -190,7 +191,8 @@ function normalizeMember(member = {}) {
     seatStatus: member.seatStatus || "ghost",
     seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
     online: member.online !== false,
-    avatar: normalizeAvatarUrl(member.avatarUrl || member.avatar || ""),
+    avatar: avatarUrl,
+    avatarUrl,
     avatarText: avatarInitial(name),
     bannedAt: member.bannedAt || "",
     banReason: member.banReason || ""
@@ -433,21 +435,27 @@ function normalizeAdminTable(table = {}, party = {}) {
     joinCode: table.shareScene,
     joinLink: `33party://join?scene=${table.shareScene}`,
     note: isEnded ? "已结束，可删除归档" : table.openSeats > 0 ? `还有 ${table.openSeats} 个空位` : "已满员，留意现场秩序",
-    members: members.map((member) => ({
-      id: member.id,
-      memberId: member.memberId,
-      name: member.nickname || member.name,
-      role: member.memberId && (member.memberId === table.headMemberId || (headMember && member.memberId === headMember.memberId)) ? "局头" : "成员",
-      gender: member.gender || "unknown",
-      seatStatus: member.seatStatus || "ghost",
-      seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
-      avatar: (member.nickname || member.name || "?").slice(0, 1),
-      online: member.online !== false,
-      wechatId: member.wechatId || "",
-      bannedAt: member.bannedAt || "",
-      banReason: member.banReason || "",
-      banned: !!member.bannedAt
-    }))
+    members: members.map((member) => {
+      const name = member.nickname || member.nickName || member.name || "新朋友";
+      const avatarUrl = normalizeAvatarUrl(member.avatarUrl || member.avatar_url || "");
+      return {
+        id: member.id,
+        memberId: member.memberId,
+        name,
+        role: member.memberId && (member.memberId === table.headMemberId || (headMember && member.memberId === headMember.memberId)) ? "局头" : "成员",
+        gender: member.gender || "unknown",
+        seatStatus: member.seatStatus || "ghost",
+        seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
+        avatar: avatarUrl,
+        avatarUrl,
+        avatarText: avatarInitial(name),
+        online: member.online !== false,
+        wechatId: member.wechatId || "",
+        bannedAt: member.bannedAt || "",
+        banReason: member.banReason || "",
+        banned: !!member.bannedAt
+      };
+    })
   };
 }
 

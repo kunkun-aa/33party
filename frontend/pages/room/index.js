@@ -8,6 +8,94 @@ function isLocalAvatar(path = "") {
   return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
 }
 
+function stableHash(value = "") {
+  return String(value).split("").reduce((hash, char) => {
+    return ((hash << 5) - hash + char.charCodeAt(0)) >>> 0;
+  }, 2166136261);
+}
+
+const avatarPalettes = {
+  male: ["#7cc7ff", "#2f7be8", "#ffd8b5", "#7b4b2a", "#1f2a44"],
+  female: ["#ff9fc7", "#ff5fa2", "#ffe0bd", "#6b3a7a", "#4b294f"],
+  unknown: ["#ffd66b", "#8ce99a", "#fff0c2", "#7a4f2b", "#263238"]
+};
+
+function buildAvatarCells(gender = "unknown", seed = "") {
+  const type = gender === "male" || gender === "female" ? gender : "unknown";
+  const palette = avatarPalettes[type];
+  const hash = stableHash(`${type}:${seed || "guest"}`);
+  const cells = [];
+  const size = 13;
+  const step = 100 / size;
+  const paint = (x, y, color) => {
+    if (x < 0 || x >= size || y < 0 || y >= size) {
+      return;
+    }
+    cells.push({ key: `${x}-${y}-${cells.length}`, x, y, color });
+  };
+  const mirror = (x, y, color) => {
+    paint(x, y, color);
+    if (x !== size - 1 - x) {
+      paint(size - 1 - x, y, color);
+    }
+  };
+
+  if (type === "male") {
+    for (let y = 1; y <= 4; y += 1) {
+      for (let x = 3; x <= 9; x += 1) paint(x, y, palette[3]);
+    }
+    for (let y = 4; y <= 8; y += 1) {
+      for (let x = 3; x <= 9; x += 1) paint(x, y, palette[2]);
+    }
+    mirror(4, 6, palette[4]);
+    mirror(5, 9, "#d9816b");
+    paint(6, 8, "#c96f5e");
+    for (let x = 4; x <= 8; x += 1) paint(x, 10, palette[0]);
+    for (let y = 11; y <= 12; y += 1) {
+      for (let x = 2; x <= 10; x += 1) paint(x, y, y === 11 ? palette[0] : palette[1]);
+    }
+  } else if (type === "female") {
+    for (let y = 1; y <= 7; y += 1) {
+      for (let x = 2; x <= 10; x += 1) {
+        if (y < 3 || x < 4 || x > 8) paint(x, y, palette[3]);
+      }
+    }
+    for (let y = 4; y <= 8; y += 1) {
+      for (let x = 3; x <= 9; x += 1) paint(x, y, palette[2]);
+    }
+    mirror(4, 6, palette[4]);
+    mirror(5, 9, "#d9818f");
+    paint(6, 8, "#c96f72");
+    for (let x = 4; x <= 8; x += 1) paint(x, 10, hash % 2 ? palette[0] : palette[1]);
+    for (let y = 11; y <= 12; y += 1) {
+      for (let x = 2; x <= 10; x += 1) paint(x, y, y === 11 ? palette[0] : palette[1]);
+    }
+  } else {
+    mirror(3, 1, palette[3]);
+    mirror(4, 2, palette[2]);
+    for (let y = 3; y <= 9; y += 1) {
+      for (let x = 3; x <= 9; x += 1) paint(x, y, palette[2]);
+    }
+    mirror(4, 6, palette[4]);
+    paint(6, 8, "#d9816b");
+    mirror(3, 10, palette[1]);
+    for (let x = 4; x <= 8; x += 1) paint(x, 11, palette[0]);
+    for (let x = 5; x <= 7; x += 1) paint(x, 12, palette[0]);
+  }
+
+  if (hash % 3 === 0) {
+    paint(6, 2, palette[0]);
+  }
+  return { type, step, cells };
+}
+
+function withGeneratedAvatar(item = {}) {
+  return {
+    ...item,
+    generatedAvatar: buildAvatarCells(item.gender || "unknown", item.id || item.memberId || item.name || item.avatarText || "")
+  };
+}
+
 Page({
   data: {
     loading: true,
@@ -37,6 +125,8 @@ Page({
     sending: false,
     flashEnabled: false,
     flashSeconds: 5,
+    plusPanelOpen: false,
+    voiceInputMode: false,
     voiceRecording: false,
     voiceRecordSeconds: 0,
     voiceReview: null,
@@ -44,17 +134,23 @@ Page({
     quotedMessage: null,
     canChat: false,
     memberTransitionId: "",
+    likedPulseId: "",
+    theme: app.getTheme ? app.getTheme() : "dark",
     mediaPreview: {
       visible: false,
       url: "",
       scale: 1,
       x: 0,
-      y: 0,
-      lastTapAt: 0
+      y: 0
     }
   },
 
   onLoad(options) {
+    this.pageUnloaded = false;
+    this.likingMessageIds = {};
+    this.mediaCacheQueue = [];
+    this.mediaCacheKeys = {};
+    this.mediaCacheActive = 0;
     const entry = parseEntry(options);
     this.setData({ entry });
     this.loadRemoteConfig();
@@ -66,8 +162,47 @@ Page({
   },
 
   onShow() {
+    this.setData({ theme: app.getTheme ? app.getTheme() : "dark" });
     this.roomSocketClosedByPage = false;
     this.connectRoomSocket();
+    if (wx.hideShareMenu) {
+      wx.hideShareMenu();
+    }
+  },
+
+  toggleTheme() {
+    const theme = app.toggleTheme ? app.toggleTheme() : "dark";
+    this.lightFeedback();
+    this.setData({ theme });
+  },
+
+  lightFeedback(type = "light") {
+    if (!wx.vibrateShort) {
+      return;
+    }
+    try {
+      wx.vibrateShort({ type });
+    } catch (error) {
+      try {
+        wx.vibrateShort();
+      } catch (fallbackError) {
+        console.warn("轻触反馈不可用", fallbackError);
+      }
+    }
+  },
+
+  setDataIfAlive(data) {
+    if (this.pageUnloaded) {
+      return false;
+    }
+    this.setData(data);
+    return true;
+  },
+
+  showToastIfAlive(options) {
+    if (!this.pageUnloaded) {
+      wx.showToast(options);
+    }
   },
 
   onHide() {
@@ -75,13 +210,27 @@ Page({
   },
 
   onUnload() {
+    this.pageUnloaded = true;
     this.closeRoomSocket();
+    this.mediaCacheQueue = [];
     if (this.recordTimer) {
       clearInterval(this.recordTimer);
+    }
+    if (this.scrollTimer) {
+      clearTimeout(this.scrollTimer);
+      this.scrollTimer = null;
     }
     if (this.memberTransitionTimer) {
       clearTimeout(this.memberTransitionTimer);
       this.memberTransitionTimer = null;
+    }
+    if (this.likePulseTimer) {
+      clearTimeout(this.likePulseTimer);
+      this.likePulseTimer = null;
+    }
+    if (this.previewScaleTimer) {
+      clearTimeout(this.previewScaleTimer);
+      this.previewScaleTimer = null;
     }
     if (this.recorderManager && this.data.voiceRecording) {
       this.voiceRecordCanceled = true;
@@ -122,13 +271,13 @@ Page({
   async loadRemoteConfig() {
     try {
       const config = await api.getConfig();
-      this.setData({
+      this.setDataIfAlive({
         messageTemplateId: config.messageTemplateId || app.globalData.messageTemplateId || "",
         notifyReady: !!(config.messageTemplateId || app.globalData.messageTemplateId)
       });
     } catch (error) {
       const templateId = app.globalData.messageTemplateId || "";
-      this.setData({
+      this.setDataIfAlive({
         messageTemplateId: templateId,
         notifyReady: !!templateId
       });
@@ -162,7 +311,7 @@ Page({
               openid: loginRes.openid
             };
             app.saveUserProfile(nextProfile);
-            this.setData({
+            this.setDataIfAlive({
               profileForm: {
                 ...this.data.profileForm,
                 ...(loginRes.user || {}),
@@ -184,12 +333,16 @@ Page({
   },
 
   async loadRoom(entry) {
-    this.setData({ loading: true });
+    this.setDataIfAlive({ loading: true });
     try {
       const room = await api.getRoomByEntry(entry);
+      if (this.pageUnloaded) {
+        return;
+      }
       const mergedRoom = this.mergeLocalRoomMessages(room);
+      const preparedRoom = this.decorateRoomAvatars(this.prepareFlashMessages(this.hydrateRoomMessageProfiles(mergedRoom)));
       this.setData({
-        room: this.prepareFlashMessages(this.hydrateRoomMessageProfiles(mergedRoom)),
+        room: preparedRoom,
         canChat: this.computeCanChat(mergedRoom, this.data.profileForm),
         loading: false
       });
@@ -199,6 +352,9 @@ Page({
       this.scrollChatToBottom();
       this.connectRoomSocket();
     } catch (error) {
+      if (this.pageUnloaded) {
+        return;
+      }
       if (error && /已结束/.test(error.message || "")) {
         console.warn("房间已结束", error);
         this.setData({
@@ -213,14 +369,14 @@ Page({
         return;
       }
       console.warn("房间接口加载失败，已回退到本地演示数据", error);
-      const room = this.prepareFlashMessages(buildRoom(entry));
+      const room = this.decorateRoomAvatars(this.prepareFlashMessages(buildRoom(entry)));
       this.setData({
         room,
         loading: false
       });
       this.startFlashCountdown();
       this.scrollChatToBottom();
-      wx.showToast({
+      this.showToastIfAlive({
         title: "后端连接失败，已显示演示数据",
         icon: "none"
       });
@@ -274,6 +430,7 @@ Page({
     if (!this.data.profileReady) {
       return;
     }
+    this.lightFeedback();
     const savedProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || this.data.profileForm;
     this.setData({
       profileEditing: true,
@@ -290,6 +447,7 @@ Page({
     if (!this.data.profileReady || this.data.profileSaving) {
       return;
     }
+    this.lightFeedback();
     const savedProfile = app.globalData.userProfile || wx.getStorageSync("partyUserProfile") || this.data.profileForm;
     this.setData({
       profileEditing: false,
@@ -311,6 +469,12 @@ Page({
 
   onGenderTap(event) {
     const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {};
+    if (!dataset.gender) {
+      return;
+    }
+    if (dataset.gender && dataset.gender !== this.data.profileForm.gender) {
+      this.lightFeedback();
+    }
     this.setData({
       "profileForm.gender": dataset.gender
     });
@@ -318,6 +482,7 @@ Page({
 
   toggleAgreement() {
     const checked = !(this.data.profileForm.agreementAccepted && this.data.profileForm.ageConfirmed);
+    this.lightFeedback();
     this.setData({
       "profileForm.agreementAccepted": checked,
       "profileForm.ageConfirmed": checked
@@ -353,6 +518,9 @@ Page({
     try {
       this.setData({ profileSaving: true });
       const openid = await this.ensureOpenid();
+      if (this.pageUnloaded) {
+        return;
+      }
       const profile = await api.updateUserProfile({
         ...profileForm,
         openid: profileForm.openid || openid,
@@ -361,6 +529,9 @@ Page({
         agreementAccepted: true,
         ageConfirmed: true
       });
+      if (this.pageUnloaded) {
+        return;
+      }
       const savedProfile = {
         ...profileForm,
         ...profile,
@@ -371,6 +542,9 @@ Page({
       let joinedRoom = null;
       if (this.data.room && savedProfile.id && !wasEditing) {
         joinedRoom = await api.joinParty(this.data.room.partyId, this.data.room.tableId, savedProfile.id);
+        if (this.pageUnloaded) {
+          return;
+        }
       }
       this.setData({
         profileReady: true,
@@ -381,19 +555,19 @@ Page({
       });
       if (wasEditing) {
         this.applyUserProfileUpdate(savedProfile);
-        wx.showToast({ title: "资料已更新", icon: "none" });
+        this.showToastIfAlive({ title: "资料已更新", icon: "none" });
       }
       this.scrollChatToBottom();
       if (!wasEditing) {
         this.requestMessageSubscription();
       }
     } catch (error) {
-      wx.showToast({
+      this.showToastIfAlive({
         title: error.message || "进入失败",
         icon: "none"
       });
     } finally {
-      this.setData({ profileSaving: false });
+      this.setDataIfAlive({ profileSaving: false });
     }
   },
 
@@ -408,6 +582,9 @@ Page({
 
     try {
       const openid = await this.ensureOpenid();
+      if (this.pageUnloaded) {
+        return profileForm;
+      }
       const synced = await api.updateUserProfile({
         ...profileForm,
         openid: profileForm.openid || openid,
@@ -420,8 +597,10 @@ Page({
         remoteSynced: true
       };
       app.saveUserProfile(nextProfile);
-      this.setData({ profileForm: nextProfile });
-      this.updateCanChat();
+      if (!this.pageUnloaded) {
+        this.setData({ profileForm: nextProfile });
+        this.updateCanChat();
+      }
       return nextProfile;
     } catch (error) {
       console.warn("用户资料同步失败，继续使用本地资料", error);
@@ -436,13 +615,16 @@ Page({
     this.recorderManager = wx.getRecorderManager();
     this.recorderManager.onStop((res) => this.handleRecordStop(res));
     this.recorderManager.onError((error) => {
+      if (this.pageUnloaded) {
+        return;
+      }
       console.warn("录音失败", error);
       this.stopRecordTimer();
-      this.setData({
+      this.setDataIfAlive({
         voiceRecording: false,
         voiceRecordSeconds: 0
       });
-      wx.showToast({ title: "录音暂不可用", icon: "none" });
+      this.showToastIfAlive({ title: "录音暂不可用", icon: "none" });
     });
   },
 
@@ -451,12 +633,23 @@ Page({
       return;
     }
     this.voicePlayer = wx.createInnerAudioContext();
-    this.voicePlayer.onEnded(() => this.markVoicePlaying(""));
-    this.voicePlayer.onStop(() => this.markVoicePlaying(""));
+    this.voicePlayer.onEnded(() => {
+      if (!this.pageUnloaded) {
+        this.markVoicePlaying("");
+      }
+    });
+    this.voicePlayer.onStop(() => {
+      if (!this.pageUnloaded) {
+        this.markVoicePlaying("");
+      }
+    });
     this.voicePlayer.onError((error) => {
+      if (this.pageUnloaded) {
+        return;
+      }
       console.warn("语音播放失败", error);
       this.markVoicePlaying("");
-      wx.showToast({ title: "语音暂不可播放", icon: "none" });
+      this.showToastIfAlive({ title: "语音暂不可播放", icon: "none" });
     });
   },
 
@@ -475,10 +668,82 @@ Page({
     });
   },
 
+  decorateRoomAvatars(room) {
+    if (!room) {
+      return room;
+    }
+    const memberById = {};
+    const members = (room.members || []).map((member) => {
+      const nextMember = withGeneratedAvatar(member);
+      if (nextMember.id) {
+        memberById[nextMember.id] = nextMember;
+      }
+      return nextMember;
+    });
+    const messages = (room.messages || []).map((message) => {
+      const member = memberById[message.senderId] || {};
+      return withGeneratedAvatar({
+        ...message,
+        gender: message.gender || member.gender || "unknown"
+      });
+    });
+    return {
+      ...room,
+      members,
+      messages
+    };
+  },
+
+  getRoomSharePath() {
+    const room = this.data.room || {};
+    const scene = room.scene || room.room && room.room.entryCode || "";
+    if (scene) {
+      return `/frontend/pages/room/index?scene=${encodeURIComponent(scene)}`;
+    }
+    const params = [];
+    if (room.partyId) {
+      params.push(`partyId=${encodeURIComponent(room.partyId)}`);
+    }
+    if (room.tableId) {
+      params.push(`tableId=${encodeURIComponent(room.tableId)}`);
+    }
+    return `/frontend/pages/room/index${params.length ? `?${params.join("&")}` : ""}`;
+  },
+
+  onCopyRoomShare() {
+    const path = this.getRoomSharePath();
+    wx.setClipboardData({
+      data: path,
+      success: () => {
+        wx.showToast({
+          title: "入局路径已复制",
+          icon: "none"
+        });
+      }
+    });
+  },
+
   onInput(event) {
     const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail;
     this.setData({
-      inputText: value || ""
+      inputText: value || "",
+      plusPanelOpen: false
+    });
+  },
+
+  toggleVoiceInputMode() {
+    this.lightFeedback();
+    this.setData({
+      voiceInputMode: !this.data.voiceInputMode,
+      plusPanelOpen: false
+    });
+  },
+
+  togglePlusPanel() {
+    this.lightFeedback();
+    this.setData({
+      plusPanelOpen: !this.data.plusPanelOpen,
+      voiceInputMode: false
     });
   },
 
@@ -494,6 +759,9 @@ Page({
 
     this.setData({ sending: true });
     const profile = await this.ensureProfileSynced();
+    if (this.pageUnloaded) {
+      return;
+    }
     const message = {
       type: "text",
       senderId: profile.id,
@@ -506,15 +774,21 @@ Page({
     };
     try {
       const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+      if (this.pageUnloaded) {
+        return;
+      }
       this.appendMessage(saved);
       this.setData({ inputText: "", quotedMessage: null });
     } catch (error) {
+      if (this.pageUnloaded) {
+        return;
+      }
       console.warn("消息发送失败，已本地追加", error);
       this.appendMessage({ ...message, id: `local_msg_${Date.now()}` });
       this.setData({ inputText: "", quotedMessage: null });
       wx.showToast({ title: "后端暂未接收，已本地显示", icon: "none" });
     } finally {
-      this.setData({ sending: false });
+      this.setDataIfAlive({ sending: false });
     }
   },
 
@@ -531,6 +805,7 @@ Page({
       return;
     }
     this.recordStartedAt = Date.now();
+    this.lightFeedback("medium");
     this.setData({
       voiceRecording: true,
       voiceRecordSeconds: 0,
@@ -566,11 +841,13 @@ Page({
     if (!this.data.voiceRecording || !this.recorderManager) {
       return;
     }
+    this.lightFeedback("light");
     this.recorderManager.stop();
   },
 
   cancelVoiceRecord() {
     if (this.data.voiceRecording && this.recorderManager) {
+      this.lightFeedback("light");
       this.voiceRecordCanceled = true;
       this.recorderManager.stop();
     }
@@ -587,7 +864,10 @@ Page({
     const wasCanceled = this.voiceRecordCanceled;
     this.voiceRecordCanceled = false;
     this.stopRecordTimer();
-    this.setData({
+    if (this.pageUnloaded) {
+      return;
+    }
+    this.setDataIfAlive({
       voiceRecording: false,
       voiceRecordSeconds: 0
     });
@@ -595,14 +875,14 @@ Page({
       return;
     }
     if (!res.tempFilePath) {
-      wx.showToast({ title: "录音没有生成文件", icon: "none" });
+      this.showToastIfAlive({ title: "录音没有生成文件", icon: "none" });
       return;
     }
     if (durationSeconds < 1) {
-      wx.showToast({ title: "录音时间太短", icon: "none" });
+      this.showToastIfAlive({ title: "录音时间太短", icon: "none" });
       return;
     }
-    this.setData({
+    this.setDataIfAlive({
       voiceReview: {
         tempFilePath: res.tempFilePath,
         durationSeconds,
@@ -613,9 +893,17 @@ Page({
 
   startRecordTimer() {
     this.stopRecordTimer();
+    this.lastRecordSecond = -1;
     this.recordTimer = setInterval(() => {
+      if (this.pageUnloaded) {
+        this.stopRecordTimer();
+        return;
+      }
       const seconds = Math.max(Math.floor((Date.now() - this.recordStartedAt) / 1000), 0);
-      this.setData({ voiceRecordSeconds: seconds });
+      if (seconds !== this.lastRecordSecond) {
+        this.lastRecordSecond = seconds;
+        this.setDataIfAlive({ voiceRecordSeconds: seconds });
+      }
     }, 300);
   },
 
@@ -624,6 +912,7 @@ Page({
       clearInterval(this.recordTimer);
       this.recordTimer = null;
     }
+    this.lastRecordSecond = -1;
   },
 
   discardVoiceReview() {
@@ -640,6 +929,9 @@ Page({
     }
     this.setData({ sending: true });
     const profile = await this.ensureProfileSynced();
+    if (this.pageUnloaded) {
+      return;
+    }
     const message = {
       type: "voice",
       senderId: profile.id,
@@ -655,18 +947,25 @@ Page({
     };
     try {
       const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+      if (this.pageUnloaded) {
+        return;
+      }
       this.appendMessage(saved);
       this.setData({ voiceReview: null, quotedMessage: null });
     } catch (error) {
+      if (this.pageUnloaded) {
+        return;
+      }
       console.warn("语音消息发送失败，已本地追加", error);
       this.appendMessage({ ...message, id: `local_voice_${Date.now()}` });
       this.setData({ voiceReview: null, quotedMessage: null });
     } finally {
-      this.setData({ sending: false });
+      this.setDataIfAlive({ sending: false });
     }
   },
 
   onChoosePhoto() {
+    this.setData({ plusPanelOpen: false });
     if (!this.canCurrentUserChat()) {
       wx.showToast({ title: "占位后才能发言", icon: "none" });
       return;
@@ -677,6 +976,9 @@ Page({
       sourceType: ["album", "camera"],
       success: async (res) => {
         const profile = await this.ensureProfileSynced();
+        if (this.pageUnloaded) {
+          return;
+        }
         const file = res.tempFiles[0];
         const isVideo = file.fileType === "video" || /\.(mp4|mov|m4v)$/i.test(file.tempFilePath || "");
         const message = {
@@ -698,65 +1000,19 @@ Page({
         };
         try {
           const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+          if (this.pageUnloaded) {
+            return;
+          }
           this.appendMessage(saved);
           this.setData({ quotedMessage: null });
         } catch (error) {
+          if (this.pageUnloaded) {
+            return;
+          }
           console.warn("媒体消息发送失败，已本地追加", error);
           this.appendMessage({ ...message, id: `local_media_${Date.now()}` });
           this.setData({ quotedMessage: null });
         }
-      }
-    });
-  },
-
-  onChooseEmoji() {
-    if (!this.canCurrentUserChat()) {
-      wx.showToast({ title: "占位后才能发言", icon: "none" });
-      return;
-    }
-    if (!wx.chooseMessageFile) {
-      wx.showToast({ title: "当前微信版本暂不支持选择表情", icon: "none" });
-      return;
-    }
-    wx.chooseMessageFile({
-      count: 1,
-      type: "image",
-      success: async (res) => {
-        const file = res.tempFiles && res.tempFiles[0];
-        if (!file || !file.path) {
-          wx.showToast({ title: "未选择表情", icon: "none" });
-          return;
-        }
-        const profile = await this.ensureProfileSynced();
-        const message = {
-          type: "emoji",
-          senderId: profile.id,
-          isMine: true,
-          sender: profile.nickName || "我",
-          avatar: profile.avatarUrl,
-          time: this.formatTime(new Date()),
-          text: "[表情]",
-          image: file.path,
-          mediaUrl: file.path,
-          likeCount: 0,
-          quote: this.data.quotedMessage
-        };
-        try {
-          const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
-          this.appendMessage(saved);
-          this.setData({ quotedMessage: null });
-        } catch (error) {
-          console.warn("表情消息发送失败，已本地追加", error);
-          this.appendMessage({ ...message, id: `local_emoji_${Date.now()}` });
-          this.setData({ quotedMessage: null });
-          wx.showToast({ title: "后端暂未接收，已本地显示", icon: "none" });
-        }
-      },
-      fail: (error) => {
-        if (error && /cancel/i.test(error.errMsg || "")) {
-          return;
-        }
-        wx.showToast({ title: "表情选择失败", icon: "none" });
       }
     });
   },
@@ -822,10 +1078,10 @@ Page({
         targetUserId: target.targetUserId,
         reason
       });
-      wx.showToast({ title: "举报已提交", icon: "none" });
+      this.showToastIfAlive({ title: "举报已提交", icon: "none" });
     } catch (error) {
       console.warn("举报提交失败", error);
-      wx.showToast({ title: error.message || "举报提交失败", icon: "none" });
+      this.showToastIfAlive({ title: error.message || "举报提交失败", icon: "none" });
     }
   },
 
@@ -835,6 +1091,13 @@ Page({
 
   findMessageById(id) {
     return (this.data.room && this.data.room.messages || []).find((message) => message.id === id);
+  },
+
+  findMessageIndexById(id) {
+    if (!id || !this.data.room || !this.data.room.messages) {
+      return -1;
+    }
+    return this.data.room.messages.findIndex((message) => message.id === id);
   },
 
   buildQuoteFromMessage(message) {
@@ -928,93 +1191,205 @@ Page({
     if (!url) {
       return;
     }
+    this.mediaPreviewScale = 1;
+    this.mediaPreviewLastTapAt = 0;
+    this.lightFeedback();
     this.setData({
       mediaPreview: {
         visible: true,
         url,
         scale: 1,
         x: 0,
-        y: 0,
-        lastTapAt: 0
+        y: 0
       }
     });
   },
 
   closeMediaPreview() {
+    this.mediaPreviewScale = 1;
+    this.mediaPreviewLastTapAt = 0;
+    if (this.previewScaleTimer) {
+      clearTimeout(this.previewScaleTimer);
+      this.previewScaleTimer = null;
+    }
+    this.lightFeedback();
     this.setData({
       "mediaPreview.visible": false,
       "mediaPreview.url": "",
       "mediaPreview.scale": 1,
       "mediaPreview.x": 0,
-      "mediaPreview.y": 0,
-      "mediaPreview.lastTapAt": 0
+      "mediaPreview.y": 0
     });
   },
 
   onMediaPreviewScale(event) {
     const scale = event.detail && event.detail.scale;
     if (scale) {
-      this.setData({ "mediaPreview.scale": scale });
+      this.mediaPreviewScale = scale;
     }
   },
 
   onMediaPreviewImageTap(event) {
     const now = event.timeStamp || Date.now();
-    const lastTapAt = this.data.mediaPreview.lastTapAt || 0;
+    const lastTapAt = this.mediaPreviewLastTapAt || 0;
     if (now - lastTapAt > 0 && now - lastTapAt < 280) {
-      const nextScale = this.data.mediaPreview.scale > 1 ? 1 : 2;
-      this.setData({
-        "mediaPreview.scale": nextScale,
-        "mediaPreview.x": 0,
-        "mediaPreview.y": 0,
-        "mediaPreview.lastTapAt": 0
-      });
+      const currentScale = this.mediaPreviewScale || this.data.mediaPreview.scale || 1;
+      const nextScale = currentScale > 1 ? 1 : 2;
+      this.mediaPreviewScale = nextScale;
+      this.mediaPreviewLastTapAt = 0;
+      this.lightFeedback();
+      this.setMediaPreviewTargetScale(nextScale);
       return;
     }
-    this.setData({ "mediaPreview.lastTapAt": now });
+    this.mediaPreviewLastTapAt = now;
+  },
+
+  setMediaPreviewTargetScale(nextScale) {
+    const currentTargetScale = this.data.mediaPreview.scale || 1;
+    if (this.previewScaleTimer) {
+      clearTimeout(this.previewScaleTimer);
+      this.previewScaleTimer = null;
+    }
+    if (nextScale === 1 && currentTargetScale === 1) {
+      this.setData({
+        "mediaPreview.scale": 1.01,
+        "mediaPreview.x": 0,
+        "mediaPreview.y": 0
+      });
+      this.previewScaleTimer = setTimeout(() => {
+        this.previewScaleTimer = null;
+        if (this.pageUnloaded || !this.data.mediaPreview.visible) {
+          return;
+        }
+        this.setData({
+          "mediaPreview.scale": 1,
+          "mediaPreview.x": 0,
+          "mediaPreview.y": 0
+        });
+      }, 16);
+      return;
+    }
+    this.setData({
+      "mediaPreview.scale": nextScale,
+      "mediaPreview.x": 0,
+      "mediaPreview.y": 0
+    });
   },
 
   noop() {
   },
 
   markVoicePlaying(id) {
-    const messages = (this.data.room && this.data.room.messages || []).map((message) => ({
-      ...message,
-      playing: message.id === id
-    }));
-    this.setData({ "room.messages": messages });
+    if (this.pageUnloaded) {
+      return;
+    }
+    const messages = this.data.room && this.data.room.messages || [];
+    if (!messages.length) {
+      this.currentVoicePlayingId = "";
+      return;
+    }
+    const previousId = this.currentVoicePlayingId || "";
+    const previousIndex = previousId
+      ? this.findMessageIndexById(previousId)
+      : messages.findIndex((message) => message.playing);
+    const nextIndex = id ? this.findMessageIndexById(id) : -1;
+    const patch = {};
+    if (previousIndex >= 0 && previousIndex !== nextIndex && messages[previousIndex].playing) {
+      patch[`room.messages[${previousIndex}].playing`] = false;
+    }
+    if (nextIndex >= 0 && !messages[nextIndex].playing) {
+      patch[`room.messages[${nextIndex}].playing`] = true;
+    }
+    this.currentVoicePlayingId = id || "";
+    if (Object.keys(patch).length) {
+      this.setData(patch);
+    }
   },
 
   updateMessage(id, patch) {
-    const messages = (this.data.room && this.data.room.messages || []).map((message) => {
-      if (message.id === id) {
-        return { ...message, ...patch };
+    const index = this.findMessageIndexById(id);
+    if (index < 0) {
+      return;
+    }
+    this.setData({
+      [`room.messages[${index}]`]: {
+        ...this.data.room.messages[index],
+        ...patch
       }
-      return message;
     });
-    this.setData({ "room.messages": messages });
     this.persistRoomMessages();
   },
 
   toggleFlash() {
+    this.lightFeedback();
     this.setData({ flashEnabled: !this.data.flashEnabled });
   },
 
   setFlashSeconds(event) {
-    this.setData({ flashSeconds: Number(event.currentTarget.dataset.seconds) });
+    const seconds = Number(event.currentTarget.dataset.seconds);
+    if (!seconds) {
+      return;
+    }
+    if (seconds !== this.data.flashSeconds) {
+      this.lightFeedback();
+    }
+    this.setData({ flashSeconds: seconds });
   },
 
   async onLike(event) {
     const { id } = event.currentTarget.dataset;
-    if (!this.data.room) {
+    this.likeMessageById(id);
+  },
+
+  onMessageTap(event) {
+    const id = event.currentTarget.dataset.id;
+    const now = event.timeStamp || Date.now();
+    if (this.lastMessageTap && this.lastMessageTap.id === id && now - this.lastMessageTap.time < 320) {
+      this.lastMessageTap = null;
+      this.likeMessageById(id);
       return;
     }
+    this.lastMessageTap = { id, time: now };
+  },
+
+  async likeMessageById(id) {
+    if (!this.data.room || !id) {
+      return;
+    }
+    this.likingMessageIds = this.likingMessageIds || {};
+    if (this.likingMessageIds[id]) {
+      return;
+    }
+    this.likingMessageIds[id] = true;
+    this.lightFeedback();
+    this.setData({ likedPulseId: id });
+    if (this.likePulseTimer) {
+      clearTimeout(this.likePulseTimer);
+    }
+    this.likePulseTimer = setTimeout(() => {
+      this.setDataIfAlive({ likedPulseId: "" });
+      this.likePulseTimer = null;
+    }, 520);
     try {
       const message = await api.likeMessage(this.data.room.partyId, id);
+      if (this.pageUnloaded) {
+        return;
+      }
       this.replaceMessage(message);
     } catch (error) {
+      if (this.pageUnloaded) {
+        return;
+      }
       console.warn("点赞同步失败", error);
-      wx.showToast({ title: "点赞失败，请重试", icon: "none" });
+      const index = this.findMessageIndexById(id);
+      if (index >= 0) {
+        const message = this.data.room.messages[index];
+        this.updateMessage(id, {
+          likeCount: Number(message.likeCount || 0) + 1
+        });
+      }
+    } finally {
+      delete this.likingMessageIds[id];
     }
   },
 
@@ -1035,8 +1410,12 @@ Page({
     wx.setClipboardData({
       data: room.manager.wechatId,
       success: async () => {
-        await api.recordManagerWechatAction(room.partyId, room.manager.id || room.manager.name);
-        wx.showToast({
+        try {
+          await api.recordManagerWechatAction(room.partyId, room.manager.id || room.manager.name);
+        } catch (error) {
+          console.warn("管理员微信复制记录失败", error);
+        }
+        this.showToastIfAlive({
           title: "已复制管理员微信",
           icon: "none"
         });
@@ -1051,11 +1430,14 @@ Page({
     const room = this.data.room;
     const templateId = this.data.messageTemplateId || app.globalData.messageTemplateId;
     const openid = await this.ensureOpenid();
+    if (this.pageUnloaded) {
+      return;
+    }
     const profile = app.globalData.userProfile || this.data.profileForm;
     if (!room || !templateId || !openid || !profile || !profile.id || !wx.requestSubscribeMessage) {
       return;
     }
-    this.setData({ notifySaving: true });
+    this.setDataIfAlive({ notifySaving: true });
     try {
       const result = await new Promise((resolve, reject) => {
         wx.requestSubscribeMessage({
@@ -1066,11 +1448,11 @@ Page({
       });
       const status = result[templateId] === "accept" ? "accepted" : "rejected";
       await api.saveMessageSubscription(room, profile.id, status, templateId);
-      this.setData({ notifyEnabled: status === "accepted" });
+      this.setDataIfAlive({ notifyEnabled: status === "accepted" });
     } catch (error) {
       console.warn("订阅消息授权失败", error);
     } finally {
-      this.setData({ notifySaving: false });
+      this.setDataIfAlive({ notifySaving: false });
     }
   },
 
@@ -1093,21 +1475,20 @@ Page({
     if (!nextMessage || !nextMessage.id || !this.data.room) {
       return;
     }
-    let replaced = false;
-    const messages = (this.data.room.messages || []).map((item) => {
-      if (item.id === nextMessage.id) {
-        replaced = true;
-        return {
-          ...item,
+    const index = this.findMessageIndexById(nextMessage.id);
+    if (index >= 0) {
+      this.setData({
+        [`room.messages[${index}]`]: {
+          ...this.data.room.messages[index],
           ...nextMessage
-        };
-      }
-      return item;
-    });
-    if (!replaced) {
-      messages.push(nextMessage);
+        }
+      });
+      this.persistRoomMessages();
+      return;
     }
-    this.setData({ "room.messages": messages });
+    this.setData({
+      "room.messages": [...(this.data.room.messages || []), nextMessage]
+    });
     this.persistRoomMessages();
   },
 
@@ -1339,8 +1720,15 @@ Page({
 
   scrollChatToBottom() {
     this.setData({ chatScrollTarget: "" });
-    setTimeout(() => {
+    if (this.scrollTimer) {
+      clearTimeout(this.scrollTimer);
+    }
+    this.scrollTimer = setTimeout(() => {
+      if (this.pageUnloaded) {
+        return;
+      }
       this.setData({ chatScrollTarget: "chat-bottom" });
+      this.scrollTimer = null;
     }, 80);
   },
 
@@ -1433,28 +1821,33 @@ Page({
     const room = this.data.room;
     const messages = room && room.messages || [];
     let hasActiveFlash = false;
-    let changed = false;
-    const nextMessages = messages.map((message) => {
+    let shouldPersist = false;
+    const patch = {};
+    messages.forEach((message, index) => {
       if (!message.isFlash || message.flashExpired) {
-        return message;
+        return;
       }
       const expiresAt = this.getFlashExpiresAt(message);
       const remaining = expiresAt ? Math.max(Math.ceil((expiresAt - Date.now()) / 1000), 0) : 0;
+      const expired = remaining <= 0;
+      const countdownText = `${remaining} 秒后自动销毁`;
       hasActiveFlash = hasActiveFlash || remaining > 0;
-      if (message.flashRemainingSeconds === remaining && message.flashExpired === (remaining <= 0)) {
-        return message;
+      if (message.flashRemainingSeconds !== remaining) {
+        patch[`room.messages[${index}].flashRemainingSeconds`] = remaining;
       }
-      changed = true;
-      return {
-        ...message,
-        flashRemainingSeconds: remaining,
-        flashCountdownText: `${remaining} 秒后自动销毁`,
-        flashExpired: remaining <= 0
-      };
+      if (message.flashCountdownText !== countdownText) {
+        patch[`room.messages[${index}].flashCountdownText`] = countdownText;
+      }
+      if (message.flashExpired !== expired) {
+        patch[`room.messages[${index}].flashExpired`] = expired;
+        shouldPersist = shouldPersist || expired;
+      }
     });
 
-    if (changed) {
-      this.setData({ "room.messages": nextMessages });
+    if (Object.keys(patch).length) {
+      this.setData(patch);
+    }
+    if (shouldPersist) {
       this.persistRoomMessages();
     }
     if (!hasActiveFlash) {
@@ -1572,32 +1965,64 @@ Page({
     }
     const messages = room.messages
       .filter((message) => message && !message.flashExpired)
+      .map((message) => {
+        const { playing, ...persistedMessage } = message;
+        return persistedMessage;
+      })
       .slice(-80);
     wx.setStorageSync(key, messages);
   },
 
   cacheVisibleMedia() {
     const messages = this.data.room && this.data.room.messages || [];
-    messages.forEach((message) => this.cacheMessageMedia(message));
+    messages.slice(-30).forEach((message) => this.cacheMessageMedia(message));
   },
 
   cacheMessageMedia(message) {
-    if (!message || message.localCached || message.isFlash) {
+    if (!message || message.localCached || message.isFlash || message.type === "video") {
       return;
     }
     const mediaUrl = message.mediaUrl || message.image || message.video || message.voicePath || "";
     if (!/^https?:\/\//.test(mediaUrl) || !wx.downloadFile || !wx.getFileSystemManager) {
       return;
     }
+    this.mediaCacheQueue = this.mediaCacheQueue || [];
+    this.mediaCacheKeys = this.mediaCacheKeys || {};
+    const cacheKey = `${message.id || ""}:${mediaUrl}`;
+    if (this.mediaCacheKeys[cacheKey]) {
+      return;
+    }
+    this.mediaCacheKeys[cacheKey] = true;
+    this.mediaCacheQueue.push({ message, mediaUrl });
+    this.pumpMediaCacheQueue();
+  },
+
+  pumpMediaCacheQueue() {
+    this.mediaCacheQueue = this.mediaCacheQueue || [];
+    this.mediaCacheActive = this.mediaCacheActive || 0;
+    if (this.pageUnloaded || this.mediaCacheActive >= 2 || !this.mediaCacheQueue.length) {
+      return;
+    }
+    const task = this.mediaCacheQueue.shift();
+    const { message, mediaUrl } = task;
+    this.mediaCacheActive += 1;
+    const finish = () => {
+      this.mediaCacheActive = Math.max(0, (this.mediaCacheActive || 1) - 1);
+      this.pumpMediaCacheQueue();
+    };
     wx.downloadFile({
       url: mediaUrl,
       success: (res) => {
         if (res.statusCode < 200 || res.statusCode >= 300 || !res.tempFilePath) {
+          finish();
           return;
         }
         wx.getFileSystemManager().saveFile({
           tempFilePath: res.tempFilePath,
           success: (saveRes) => {
+            if (this.pageUnloaded) {
+              return;
+            }
             const savedPath = saveRes.savedFilePath;
             const patch = { localCached: true, mediaUrl: savedPath };
             if (message.type === "photo") {
@@ -1610,10 +2035,11 @@ Page({
               patch.voicePath = savedPath;
             }
             this.updateMessage(message.id, patch);
-            this.persistRoomMessages();
-          }
+          },
+          complete: finish
         });
-      }
+      },
+      fail: finish
     });
   }
 });

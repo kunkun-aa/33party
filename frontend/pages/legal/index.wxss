@@ -1,16 +1,38 @@
-page {
-  min-height: 100%;
-  background: #080b10;
-  color: #fff8ed;
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+.legal-page {
+  --page-bg: #0a0c10;
+  --page-bg-2: #11141a;
+  --text-strong: #f8fbff;
+  --text: rgba(248, 251, 255, 0.86);
+  --text-muted: rgba(222, 230, 240, 0.58);
+  --glass: rgba(24, 28, 36, 0.64);
+  --glass-soft: rgba(255, 255, 255, 0.07);
+  --hairline: rgba(255, 255, 255, 0.12);
+  --accent: #64d7f2;
+  --accent-2: #ffd166;
+  --accent-3: #9cff6d;
+  --shadow-soft: 0 18rpx 50rpx rgba(0, 0, 0, 0.28);
+  min-height: 100vh;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 16% -8%, rgba(100, 215, 242, 0.18), transparent 34%),
+    radial-gradient(circle at 86% 12%, rgba(255, 209, 102, 0.14), transparent 30%),
+    linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-2) 100%);
 }
 
-.legal-page {
-  min-height: 100vh;
+.legal-page.theme-light {
+  --page-bg: #eff5fb;
+  --page-bg-2: #fbfdff;
+  --text-strong: #17202b;
+  --text: rgba(23, 32, 43, 0.84);
+  --text-muted: rgba(61, 75, 94, 0.58);
+  --glass: rgba(255, 255, 255, 0.74);
+  --glass-soft: rgba(255, 255, 255, 0.58);
+  --hairline: rgba(80, 103, 132, 0.16);
+  --shadow-soft: 0 18rpx 48rpx rgba(83, 103, 132, 0.16);
   background:
-    radial-gradient(circle at 16% -8%, rgba(226, 178, 99, 0.2), transparent 34%),
-    radial-gradient(circle at 86% 12%, rgba(91, 212, 199, 0.13), transparent 30%),
-    linear-gradient(180deg, #080b10 0%, #0b0d12 100%);
+    radial-gradient(circle at 16% -8%, rgba(100, 215, 242, 0.26), transparent 34%),
+    radial-gradient(circle at 86% 12%, rgba(255, 209, 102, 0.22), transparent 30%),
+    linear-gradient(180deg, var(--page-bg) 0%, var(--page-bg-2) 100%);
 }
 
 .status-bar {
@@ -21,51 +43,59 @@ page {
   display: flex;
   align-items: center;
   gap: 18rpx;
-  height: 92rpx;
-  padding: 0 28rpx;
-  color: #fff8ed;
+  height: 96rpx;
+  margin: 0 24rpx;
+  padding: 0 18rpx;
+  color: var(--text-strong);
   font-size: 30rpx;
   font-weight: 900;
+  background: var(--glass);
+  border: 1rpx solid var(--hairline);
+  border-radius: 24rpx;
+  box-shadow: var(--shadow-soft);
 }
 
 .back-button {
-  width: 54rpx;
-  height: 54rpx;
-  color: #071311;
+  width: 56rpx;
+  height: 56rpx;
+  color: var(--page-bg);
   font-size: 50rpx;
-  line-height: 46rpx;
+  line-height: 48rpx;
   text-align: center;
-  background: linear-gradient(135deg, #d7fb52, #5bd4c7);
+  background: linear-gradient(135deg, var(--accent-3), var(--accent));
   border-radius: 999rpx;
 }
 
 .legal-scroll {
-  height: calc(100vh - 136rpx);
+  height: calc(100vh - 140rpx);
 }
 
 .legal-content {
-  padding: 32rpx 32rpx calc(72rpx + env(safe-area-inset-bottom));
+  padding: 34rpx 32rpx calc(72rpx + env(safe-area-inset-bottom));
 }
 
 .legal-title {
   display: block;
-  color: #fff8ed;
-  font-size: 48rpx;
+  color: var(--text-strong);
+  font-size: 50rpx;
   font-weight: 900;
-  line-height: 1.15;
+  line-height: 1.14;
 }
 
 .legal-updated {
   display: block;
   margin-top: 14rpx;
-  color: rgba(245, 240, 232, 0.56);
+  color: var(--text-muted);
   font-size: 22rpx;
 }
 
 .legal-section {
-  margin-top: 36rpx;
-  padding-top: 30rpx;
-  border-top: 1rpx solid rgba(255, 255, 255, 0.1);
+  margin-top: 28rpx;
+  padding: 26rpx;
+  background: var(--glass);
+  border: 1rpx solid var(--hairline);
+  border-radius: 24rpx;
+  box-shadow: var(--shadow-soft);
 }
 
 .section-title,
@@ -74,14 +104,14 @@ page {
 }
 
 .section-title {
-  color: #d7fb52;
+  color: var(--accent-3);
   font-size: 30rpx;
   font-weight: 900;
 }
 
 .section-text {
   margin-top: 18rpx;
-  color: rgba(245, 240, 232, 0.78);
+  color: var(--text);
   font-size: 26rpx;
-  line-height: 1.7;
+  line-height: 1.72;
 }

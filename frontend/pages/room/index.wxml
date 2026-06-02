@@ -1,4 +1,4 @@
-<view class="room-page">
+<view class="room-page theme-{{theme}} {{canChat ? 'can-chat' : 'chat-locked'}}">
   <view class="ambient ambient-left"></view>
   <view class="ambient ambient-right"></view>
 
@@ -16,7 +16,12 @@
       <view class="hero">
         <view class="hero-topline">
           <text class="venue-chip">{{room.statusText}}</text>
-          <text class="live-tag">{{room.liveTag}}</text>
+          <view class="hero-actions">
+            <text class="live-tag">{{room.liveTag}}</text>
+            <view class="theme-toggle icon-button-tool" bindtap="toggleTheme" aria-label="切换主题">
+              <t-icon name="{{theme === 'dark' ? 'moon' : 'sunny'}}" size="30rpx" />
+            </view>
+          </view>
         </view>
         <view class="hero-title-row">
           <view>
@@ -24,12 +29,15 @@
           </view>
         </view>
         <view class="manager-contact">
-          <view class="manager-contact-copy">
-            <text class="contact-label">管理员微信</text>
-            <text class="contact-value">{{room.manager.wechatId}}</text>
-            <text class="contact-hint">{{room.manager.contactHint}}</text>
+          <view class="contact-symbol">
+            <t-icon name="logo-wechat-stroke" size="28rpx" />
           </view>
-          <view class="contact-button" bindtap="onCopyManagerWechat">复制</view>
+          <view class="manager-contact-copy">
+            <text class="contact-value">{{room.manager.wechatId}}</text>
+          </view>
+          <view class="contact-button icon-button-tool" bindtap="onCopyManagerWechat" aria-label="复制管理员微信">
+            <t-icon name="copy" size="30rpx" />
+          </view>
         </view>
         <view class="room-notify-strip" wx:if="{{profileReady && notifyReady}}" bindtap="requestMessageSubscription">
           <view>
@@ -51,11 +59,11 @@
         <view class="info-block address-block">
           <view class="address-head">
             <view>
-              <text class="label">酒吧地址</text>
               <text class="primary">{{room.venue.address}}</text>
-              <text class="muted">{{room.venue.distance}}</text>
             </view>
-            <view class="map-button" bindtap="openMap">地图</view>
+            <view class="map-button icon-button-tool" bindtap="openMap" aria-label="打开地图">
+              <t-icon name="map-navigation" size="30rpx" />
+            </view>
           </view>
         </view>
         <view class="info-grid">
@@ -64,10 +72,13 @@
             <text class="primary">{{room.room.tableName}}</text>
             <text class="muted">{{room.room.seatStatusText}}</text>
           </view>
-          <view class="info-block">
-            <text class="label">入局码</text>
-            <text class="primary code">{{room.room.entryCode}}</text>
-            <text class="muted">{{room.room.capacity}}</text>
+          <view class="info-block share-block">
+            <view class="share-compact">
+              <text class="primary share-text">入局路径</text>
+              <view class="share-action icon-action" bindtap="onCopyRoomShare" aria-label="复制入局路径">
+                <t-icon name="link" size="28rpx" />
+              </view>
+            </view>
           </view>
         </view>
       </view>
@@ -81,11 +92,20 @@
           <view class="member-card {{memberTransitionId === item.id ? 'status-updated' : ''}}" wx:for="{{room.members}}" wx:key="id" data-user-id="{{item.id}}" bindlongpress="onReportMember">
             <view class="avatar-wrap" data-url="{{item.avatar}}" data-user-id="{{item.id}}" bindtap="previewAvatar">
               <image wx:if="{{item.avatar}}" class="member-avatar" src="{{item.avatar}}" mode="aspectFill"></image>
-              <view wx:else class="member-avatar avatar-fallback">{{item.avatarText}}</view>
+              <view wx:else class="member-avatar avatar-fallback avatar-pixel avatar-{{item.generatedAvatar.type}}">
+                <view wx:for="{{item.generatedAvatar.cells}}" wx:key="key" class="avatar-cell" style="left: {{item.x * item.generatedAvatar.step}}%; top: {{item.y * item.generatedAvatar.step}}%; width: {{item.generatedAvatar.step}}%; height: {{item.generatedAvatar.step}}%; background: {{item.color}};"></view>
+              </view>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
             </view>
             <text class="member-name">{{item.name}}</text>
-            <text class="member-role">{{item.gender === 'male' ? '男' : item.gender === 'female' ? '女' : '保密'}} · {{item.seatStatusText}}</text>
+            <view class="member-status-icons">
+              <view class="status-icon gender {{item.gender}}">
+                <t-icon name="{{item.gender === 'male' ? 'gender-male' : item.gender === 'female' ? 'gender-female' : 'user-unknown'}}" size="20rpx" color="{{item.gender === 'male' ? '#2f80ff' : item.gender === 'female' ? '#ec5f9d' : '#9aa4b2'}}" />
+              </view>
+              <view class="status-icon {{item.seatStatus === 'seated' ? 'seated' : 'ghost'}}">
+                <t-icon name="{{item.seatStatus === 'seated' ? 'check-circle' : 'user'}}" size="20rpx" />
+              </view>
+            </view>
           </view>
         </scroll-view>
       </view>
@@ -95,14 +115,31 @@
           <text class="section-title">房间小聊</text>
         </view>
         <view class="message-list">
-          <view class="message {{item.isMine ? 'mine' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindlongpress="onQuoteMessage">
+          <view class="message {{item.isMine ? 'mine' : ''}} {{likedPulseId === item.id ? 'liked-pulse' : ''}}" wx:for="{{room.messages}}" wx:key="id" data-id="{{item.id}}" bindtap="onMessageTap" bindlongpress="onQuoteMessage">
+            <view wx:if="{{likedPulseId === item.id}}" class="like-burst {{item.isMine ? 'mine' : ''}}">
+              <view class="like-ring"></view>
+              <view class="like-core">
+                <t-icon name="heart-filled" size="34rpx" color="#ffffff" />
+              </view>
+              <view class="like-spark spark-1"></view>
+              <view class="like-spark spark-2"></view>
+              <view class="like-spark spark-3"></view>
+              <view class="like-spark spark-4"></view>
+              <view class="like-spark spark-5"></view>
+              <view class="like-spark spark-6"></view>
+            </view>
             <image wx:if="{{item.avatar}}" class="message-avatar" src="{{item.avatar}}" mode="aspectFill" data-url="{{item.avatar}}" data-user-id="{{item.senderId}}" bindtap="previewAvatar"></image>
-            <view wx:else class="message-avatar avatar-fallback">{{item.avatarText}}</view>
+            <view wx:else class="message-avatar avatar-fallback avatar-pixel avatar-{{item.generatedAvatar.type}}">
+              <view wx:for="{{item.generatedAvatar.cells}}" wx:key="key" class="avatar-cell" style="left: {{item.x * item.generatedAvatar.step}}%; top: {{item.y * item.generatedAvatar.step}}%; width: {{item.generatedAvatar.step}}%; height: {{item.generatedAvatar.step}}%; background: {{item.color}};"></view>
+            </view>
             <view class="message-body">
               <view class="message-meta">
                 <text class="message-name">{{item.sender}}</text>
                 <text class="message-time">{{item.time}}</text>
-                <text class="meta-like" data-id="{{item.id}}" bindtap="onLike">赞 {{item.likeCount || 0}}</text>
+                <view wx:if="{{item.likeCount > 0}}" class="meta-like">
+                  <t-icon name="heart-filled" size="20rpx" />
+                  <text>{{item.likeCount}}</text>
+                </view>
               </view>
 
               <view class="quote-card" wx:if="{{item.quote}}">
@@ -128,7 +165,7 @@
                 <view wx:if="{{item.flashExpired}}" class="flash-expired">照片已销毁</view>
                 <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill" data-id="{{item.id}}" bindtap="previewMedia"></image>
                 <view wx:else class="photo-placeholder">照片暂不可见</view>
-                <view class="photo-actions" wx:if="{{item.isFlash || item.text}}">
+                <view class="photo-actions" wx:if="{{(item.isFlash && !item.flashExpired) || item.text}}">
                   <text>{{item.isFlash ? item.flashCountdownText : item.text}}</text>
                 </view>
               </view>
@@ -152,7 +189,7 @@
       <view id="chat-bottom" class="chat-bottom-anchor"></view>
     </scroll-view>
 
-    <view class="composer safe-bottom" wx:if="{{profileReady}}">
+    <view class="composer safe-bottom" wx:if="{{profileReady && canChat}}">
       <view class="voice-recording" wx:if="{{voiceRecording}}">
         <view class="voice-live">
           <view class="voice-bars">
@@ -189,28 +226,43 @@
         <view class="quote-close" bindtap="clearQuote">×</view>
       </view>
 
-      <view class="composer-seat-tip" wx:if="{{!canChat}}">占位请添加管理员</view>
-
-      <view class="composer-options" wx:else>
-        <view class="flash-toggle {{flashEnabled ? 'active' : ''}}" bindtap="toggleFlash">
-          <text class="check-box">{{flashEnabled ? '✓' : ''}}</text>
-          <text>闪照</text>
+      <view class="composer-row">
+        <view class="composer-tool voice-mode-tool {{voiceInputMode ? 'active' : ''}}" bindtap="toggleVoiceInputMode" aria-label="{{voiceInputMode ? '切换键盘输入' : '切换语音输入'}}">
+          <t-icon name="microphone" size="30rpx" />
         </view>
-        <view class="flash-options" wx:if="{{flashEnabled}}">
-          <view class="flash-second {{flashSeconds === 5 ? 'active' : ''}}" data-seconds="5" bindtap="setFlashSeconds">5s</view>
-          <view class="flash-second {{flashSeconds === 10 ? 'active' : ''}}" data-seconds="10" bindtap="setFlashSeconds">10s</view>
+        <input wx:if="{{!voiceInputMode}}" class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
+        <view wx:else class="voice-hold-button {{voiceRecording ? 'recording' : ''}}" bindtouchstart="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd" bindtouchcancel="cancelVoiceRecord">
+          {{voiceRecording ? '松开发送' : '按住说话'}}
+        </view>
+        <view wx:if="{{inputText}}" class="composer-tool send-button" bindtap="onSendText" aria-label="发送消息">
+          <text wx:if="{{sending}}">...</text>
+          <t-icon wx:else name="send" size="30rpx" />
+        </view>
+        <view wx:else class="composer-tool plus-tool {{plusPanelOpen ? 'active' : ''}}" bindtap="togglePlusPanel" aria-label="更多发送选项">
+          <t-icon name="add" size="30rpx" />
         </view>
       </view>
-      <view class="composer-row" wx:if="{{canChat}}">
-        <input class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
-        <view class="composer-tool emoji-tool" bindtap="onChooseEmoji">表情</view>
-        <view class="composer-tool voice-tool {{voiceRecording ? 'recording' : ''}}" bindlongpress="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd">语音</view>
-        <view class="composer-tool photo-tool" bindtap="onChoosePhoto">照片</view>
-        <view class="composer-tool send-button" bindtap="onSendText">{{sending ? '...' : '发送'}}</view>
+      <view class="plus-panel" wx:if="{{plusPanelOpen}}">
+        <view class="plus-item" bindtap="onChoosePhoto">
+          <view class="plus-icon"><t-icon name="image" size="34rpx" /></view>
+          <text>图片/视频</text>
+        </view>
+        <view class="plus-item" bindtap="toggleFlash">
+          <view class="plus-icon {{flashEnabled ? 'active' : ''}}"><t-icon name="flashlight" size="34rpx" /></view>
+          <text>{{flashEnabled ? '闪照开' : '闪照关'}}</text>
+        </view>
+        <view class="plus-item" wx:if="{{flashEnabled}}">
+          <view class="flash-options">
+            <view class="flash-second {{flashSeconds === 5 ? 'active' : ''}}" data-seconds="5" bindtap="setFlashSeconds">5s</view>
+            <view class="flash-second {{flashSeconds === 10 ? 'active' : ''}}" data-seconds="10" bindtap="setFlashSeconds">10s</view>
+          </view>
+          <text>闪照时长</text>
+        </view>
       </view>
     </view>
+    <view class="seat-tip-float" wx:if="{{profileReady && !canChat}}">占位请添加管理员</view>
 
-    <view class="profile-mask" wx:if="{{!profileReady || profileEditing}}">
+    <view class="profile-mask" wx:if="{{!profileReady || profileEditing}}" catchtouchmove="noop">
       <view class="profile-panel">
         <view class="profile-close" wx:if="{{profileReady}}" bindtap="closeProfileEditor">×</view>
         <view class="profile-head">
@@ -237,9 +289,9 @@
             <text class="notify-title">通知栏消息</text>
             <text class="notify-copy">{{notifyEnabled ? '已开启，新消息会进入微信通知栏' : '离开小程序后接收同桌新消息'}}</text>
           </view>
-          <button class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bindtap="requestMessageSubscription">
+          <t-button t-class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bind:click="requestMessageSubscription">
             {{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}
-          </button>
+          </t-button>
         </view>
         <view class="agreement-row" wx:if="{{!profileReady}}" bindtap="toggleAgreement">
           <text class="agreement-check">{{profileForm.agreementAccepted && profileForm.ageConfirmed ? '✓' : ''}}</text>
@@ -251,11 +303,11 @@
             <text>，并确认本人已满 18 周岁</text>
           </view>
         </view>
-        <button class="profile-submit" bindtap="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">{{profileReady ? '保存资料' : '进入主局'}}</button>
+        <t-button t-class="profile-submit" bind:click="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">{{profileReady ? '保存资料' : '进入主局'}}</t-button>
       </view>
     </view>
 
-    <view class="media-preview-mask" wx:if="{{mediaPreview.visible}}" catchtap="closeMediaPreview">
+    <view class="media-preview-mask" wx:if="{{mediaPreview.visible}}" catchtap="closeMediaPreview" catchtouchmove="noop">
       <movable-area class="media-preview-area" scale-area>
         <movable-view
           class="media-preview-view"

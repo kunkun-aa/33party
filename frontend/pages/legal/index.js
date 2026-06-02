@@ -88,16 +88,24 @@ const CONTENT = {
 Page({
   data: {
     title: "",
-    sections: []
+    sections: [],
+    theme: "dark"
   },
 
   onLoad(options = {}) {
+    const app = getApp();
     const type = CONTENT[options.type] ? options.type : "terms";
     const content = CONTENT[type];
     this.setData({
       title: content.title,
-      sections: content.sections
+      sections: content.sections,
+      theme: app.getTheme ? app.getTheme() : "dark"
     });
+  },
+
+  onShow() {
+    const app = getApp();
+    this.setData({ theme: app.getTheme ? app.getTheme() : "dark" });
   },
 
   goBack() {

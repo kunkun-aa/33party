@@ -12,6 +12,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@vant/weapp": "^1.11.7"
+    "tdesign-miniprogram": "^1.15.0"
   }
 }
