@@ -113,13 +113,19 @@ function adminHeader(adminKey = "") {
   return { "X-Admin-Key": adminKey };
 }
 
+function getStoredAdminSession() {
+  const session = app.globalData.adminSession || wx.getStorageSync("partyAdminSession") || {};
+  return session && typeof session === "object" ? session : {};
+}
+
 function adminLogin(adminId, code) {
+  const data = { code };
+  if (adminId) {
+    data.adminId = adminId;
+  }
   return request("/api/admin/login", {
     method: "POST",
-    data: {
-      adminId,
-      code
-    }
+    data
   });
 }
 
@@ -418,6 +424,10 @@ function normalizeAdminTable(table = {}, party = {}) {
     title: table.title || party.title || "",
     startsAt: table.startsAt || party.startsAt || "",
     startsAtText: formatBeijingDateTime(table.startsAt || party.startsAt || ""),
+    barName: table.barName || party.barName || party.bar?.name || "",
+    barAddress: table.barAddress || party.barAddress || party.bar?.address || "",
+    latitude: table.latitude || party.latitude || party.bar?.latitude || "",
+    longitude: table.longitude || party.longitude || party.bar?.longitude || "",
     endedAt: table.endedAt || table.ended_at || "",
     status,
     statusText: table.statusText || (isEnded ? "已结束" : status === "full" ? "人数已满" : "人数未满"),
@@ -464,12 +474,16 @@ async function getRoomByEntry(entry) {
     return Promise.resolve(buildRoom(entry));
   }
 
+  const viewer = entry.adminMode
+    ? { adminId: entry.adminId || getStoredAdminSession().adminId || "" }
+    : { userId: app.globalData.userProfile && app.globalData.userProfile.id };
+
   if (entry.partyId && entry.tableId) {
     const roomRes = await request("/api/room", {
       data: {
         partyId: entry.partyId,
         tableId: entry.tableId,
-        userId: app.globalData.userProfile && app.globalData.userProfile.id
+        ...viewer
       }
     });
     return normalizeRoom(roomRes);
@@ -485,15 +499,15 @@ async function getRoomByEntry(entry) {
     data: {
       partyId,
       tableId,
-      userId: app.globalData.userProfile && app.globalData.userProfile.id
+      ...viewer
     }
   });
   return normalizeRoom(roomRes);
 }
 
-function getAdminDashboard(partyId = "party_demo", adminId = "admin_mimei", adminKey = "") {
+function getAdminDashboard(partyId = "", adminId = "admin_mimei", adminKey = "") {
   if (!app.globalData.apiBaseUrl) {
-    return Promise.resolve(null);
+    return Promise.reject(new Error("API base url is not configured"));
   }
 
   return request("/api/admin/tables", {
@@ -504,14 +518,15 @@ function getAdminDashboard(partyId = "party_demo", adminId = "admin_mimei", admi
     header: adminHeader(adminKey)
   }).then((res) => {
     const tables = (res.tables || []).map((table) => normalizeAdminTable(table, res.party));
+    const admin = (res.party && res.party.admin) || res.admin || {};
     return {
       adminProfile: {
-        id: res.party.admin.id,
-        name: res.party.admin.displayName,
-        wechatId: res.party.admin.wechatId,
+        id: admin.id || adminId,
+        name: admin.displayName || "管理员",
+        wechatId: admin.wechatId || "",
         visibleToUsers: true
       },
-      party: res.party,
+      party: res.party || null,
       tables
     };
   });
@@ -540,6 +555,12 @@ function downloadTableQrcode(tableId, adminId = "admin_mimei", adminKey = "") {
   if (!app.globalData.apiBaseUrl || !wx.downloadFile) {
     return Promise.resolve("");
   }
+  // Check local cache first — QR codes don't change for the same table.
+  const cacheKey = `partyQrcode:table:${tableId}`;
+  const cached = _getCachedQrcode(cacheKey);
+  if (cached) {
+    return Promise.resolve(cached);
+  }
   const url = buildUrl("/api/admin/tables/qrcode", {
     tableId,
     adminId
@@ -550,6 +571,7 @@ function downloadTableQrcode(tableId, adminId = "admin_mimei", adminKey = "") {
       header: adminHeader(adminKey),
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300 && res.tempFilePath) {
+          _saveQrcodeToCache(cacheKey, res.tempFilePath);
           resolve(res.tempFilePath);
           return;
         }
@@ -558,6 +580,79 @@ function downloadTableQrcode(tableId, adminId = "admin_mimei", adminKey = "") {
       fail: reject
     });
   });
+}
+
+function downloadRoomQrcode(scene) {
+  if (!app.globalData.apiBaseUrl || !wx.downloadFile || !scene) {
+    return Promise.resolve("");
+  }
+  // Check local cache first — QR codes don't change for the same scene.
+  const cacheKey = `partyQrcode:room:${scene}`;
+  const cached = _getCachedQrcode(cacheKey);
+  if (cached) {
+    return Promise.resolve(cached);
+  }
+  const url = buildUrl("/api/party/qrcode", { scene });
+  return new Promise((resolve, reject) => {
+    wx.downloadFile({
+      url,
+      success(res) {
+        if (res.statusCode >= 200 && res.statusCode < 300 && res.tempFilePath) {
+          _saveQrcodeToCache(cacheKey, res.tempFilePath);
+          resolve(res.tempFilePath);
+          return;
+        }
+        reject(new Error(`Qrcode download failed: ${res.statusCode}`));
+      },
+      fail: reject
+    });
+  });
+}
+
+// Local file-system cache for QR code images.
+// WeChat mini-program QR codes don't change for the same scene,
+// so persisting them avoids repeated downloads from the backend.
+const _QRCODE_CACHE_PREFIX = "partyQrcodeCache_";
+const _QRCODE_CACHE_MAX_AGE_MS = 86400_000; // 24 hours
+
+function _getCachedQrcode(key) {
+  try {
+    const record = wx.getStorageSync(_QRCODE_CACHE_PREFIX + key);
+    if (!record || !record.path || !record.savedAt) {
+      return null;
+    }
+    if (Date.now() - record.savedAt > _QRCODE_CACHE_MAX_AGE_MS) {
+      // Expired — clean up
+      wx.removeStorageSync(_QRCODE_CACHE_PREFIX + key);
+      return null;
+    }
+    // Verify the cached file still exists on disk
+    try {
+      wx.getFileSystemManager().accessSync(record.path);
+    } catch (_e) {
+      wx.removeStorageSync(_QRCODE_CACHE_PREFIX + key);
+      return null;
+    }
+    return record.path;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function _saveQrcodeToCache(key, tempPath) {
+  if (!tempPath || !wx.getFileSystemManager) {
+    return;
+  }
+  try {
+    const fs = wx.getFileSystemManager();
+    const saved = fs.saveFileSync(tempPath);
+    wx.setStorageSync(_QRCODE_CACHE_PREFIX + key, {
+      path: saved,
+      savedAt: Date.now()
+    });
+  } catch (_e) {
+    // If we can't persist, the download still succeeded — just won't be cached.
+  }
 }
 
 function updateAdminProfile(profile) {
@@ -641,6 +736,60 @@ function createAdminParty(form) {
   }).then((res) => ({
     party: res.party,
     tables: (res.tables || []).map((table) => normalizeAdminTable(table, res.party))
+  }));
+}
+
+function updateAdminParty(form) {
+  if (!app.globalData.apiBaseUrl) {
+    const capacity = Number(form.capacity || 8);
+    return Promise.resolve({
+      party: {
+        id: form.partyId,
+        title: form.title,
+        startsAt: form.startsAt,
+        admin: { id: form.adminId || "admin_mimei", displayName: "管理员" },
+        bar: {
+          name: form.barName || "33 Party Lounge",
+          address: form.barAddress || "",
+          latitude: form.latitude || 0,
+          longitude: form.longitude || 0
+        }
+      },
+      table: normalizeAdminTable({
+        id: form.tableId,
+        partyId: form.partyId,
+        tableNo: form.tableNo,
+        title: form.title,
+        capacity,
+        openSeats: capacity,
+        barName: form.barName,
+        barAddress: form.barAddress,
+        latitude: form.latitude,
+        longitude: form.longitude,
+        startsAt: form.startsAt,
+        members: []
+      }, { id: form.partyId, title: form.title, startsAt: form.startsAt })
+    });
+  }
+  return request("/api/admin/parties/update", {
+    method: "POST",
+    header: adminHeader(form.adminKey),
+    data: {
+      adminId: form.adminId || "admin_mimei",
+      partyId: form.partyId,
+      tableId: form.tableId,
+      title: form.title,
+      tableNo: form.tableNo,
+      capacity: Number(form.capacity || 8),
+      barName: form.barName,
+      barAddress: form.barAddress,
+      startsAt: form.startsAt,
+      latitude: form.latitude,
+      longitude: form.longitude
+    }
+  }).then((res) => ({
+    party: res.party,
+    table: normalizeAdminTable(res.table || {}, res.party)
   }));
 }
 
@@ -756,23 +905,23 @@ function saveMessageSubscription(room, userId, status = "accepted", templateId =
   });
 }
 
-async function sendRoomMessage(roomId, tableId, message) {
+async function sendRoomMessage(roomId, tableId, message, options = {}) {
   if (!app.globalData.apiBaseUrl) {
-    return Promise.resolve({
-      ...message,
-      id: `local_msg_${Date.now()}`
-    });
+    return Promise.reject(new Error("API base url is not configured"));
   }
   const localMediaPath = message.mediaUrl || message.image || message.video || message.voicePath;
   const mediaUpload = await uploadMedia(localMediaPath, message.type);
   const stableMediaUrl = mediaUpload.mediaUrl || localMediaPath;
+  const senderType = message.senderType || options.senderType || "user";
+  const adminKey = options.adminKey || (senderType === "admin" ? getStoredAdminSession().adminKey : "");
   return request("/api/messages", {
     method: "POST",
+    header: adminHeader(adminKey),
     data: {
       partyId: roomId,
       tableId,
-      senderType: "user",
-      senderId: app.globalData.userProfile && app.globalData.userProfile.id,
+      senderType,
+      senderId: message.senderId || options.senderId || app.globalData.userProfile && app.globalData.userProfile.id,
       kind: message.type,
       text: message.text,
       mediaUrl: stableMediaUrl,
@@ -829,6 +978,48 @@ function connectRoomSocket(room, handlers = {}) {
     }
     if (payload.type === "member.updated" && payload.member) {
       payload.member = normalizeMember(payload.member);
+    }
+    if (handlers.onMessage) {
+      handlers.onMessage(payload);
+    }
+  });
+  socketTask.onClose((event) => {
+    if (handlers.onClose) {
+      handlers.onClose(event);
+    }
+  });
+  socketTask.onError((error) => {
+    if (handlers.onError) {
+      handlers.onError(error);
+    }
+  });
+  return socketTask;
+}
+
+function connectAdminSocket({ partyId = "", adminId = "admin_mimei", adminKey = "" } = {}, handlers = {}) {
+  if (!app.globalData.apiBaseUrl || !partyId || !wx.connectSocket) {
+    return null;
+  }
+  const auth = adminKey && adminKey.indexOf("token:") === 0
+    ? { adminToken: adminKey.slice(6) }
+    : { adminKey };
+  const url = toWebSocketUrl(buildUrl("/ws/admin", {
+    partyId,
+    adminId,
+    ...auth
+  }));
+  const socketTask = wx.connectSocket({ url });
+  socketTask.onOpen(() => {
+    if (handlers.onOpen) {
+      handlers.onOpen();
+    }
+  });
+  socketTask.onMessage((event) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (error) {
+      return;
     }
     if (handlers.onMessage) {
       handlers.onMessage(payload);
@@ -977,8 +1168,10 @@ module.exports = {
   userLogin,
   getTableInvite,
   downloadTableQrcode,
+  downloadRoomQrcode,
   updateAdminProfile,
   createAdminParty,
+  updateAdminParty,
   endAdminParty,
   deleteEndedParties,
   setTableHead,
@@ -990,6 +1183,7 @@ module.exports = {
   uploadMedia,
   likeMessage,
   connectRoomSocket,
+  connectAdminSocket,
   setMemberSeat,
   kickMember,
   getAdminReports,

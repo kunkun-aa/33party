@@ -96,10 +96,35 @@ function withGeneratedAvatar(item = {}) {
   };
 }
 
+function hasExplicitRoomEntry(entry = {}) {
+  return !!(entry.scene || entry.inviteCode || entry.adminMode || (entry.partyId && entry.tableId));
+}
+
+function getStoredAdminSession() {
+  const session = app.globalData.adminSession || wx.getStorageSync("partyAdminSession") || {};
+  return session && typeof session === "object" ? session : {};
+}
+
+function wxLoginCode() {
+  return new Promise((resolve) => {
+    if (!wx.login) {
+      resolve("");
+      return;
+    }
+    wx.login({
+      success: (res) => resolve(res.code || ""),
+      fail: () => resolve("")
+    });
+  });
+}
+
 Page({
   data: {
     loading: true,
     entry: {},
+    adminMode: false,
+    adminId: "",
+    adminKey: "",
     room: null,
     profileReady: false,
     profileForm: {
@@ -123,6 +148,7 @@ Page({
     reportReasons: ["骚扰辱骂", "色情低俗", "诈骗引流", "广告刷屏", "侵犯隐私", "其他"],
     inputText: "",
     sending: false,
+    sharingQrcode: false,
     flashEnabled: false,
     flashSeconds: 5,
     plusPanelOpen: false,
@@ -152,11 +178,28 @@ Page({
     this.mediaCacheKeys = {};
     this.mediaCacheActive = 0;
     const entry = parseEntry(options);
-    this.setData({ entry });
+    const adminSession = entry.adminMode ? getStoredAdminSession() : {};
+    const adminId = entry.adminId || adminSession.adminId || "";
+    const adminKey = entry.adminKey || adminSession.adminKey || "";
+    this.setData({
+      entry,
+      adminMode: !!entry.adminMode,
+      adminId,
+      adminKey,
+      profileReady: !!entry.adminMode
+    });
     this.loadRemoteConfig();
     this.loadProfile();
     this.ensureOpenid();
-    this.loadRoom(entry);
+    if (!hasExplicitRoomEntry(entry) && app.waitForAdminRedirect) {
+      app.waitForAdminRedirect().then((redirected) => {
+        if (!redirected && !this.pageUnloaded) {
+          this.loadRoom(entry);
+        }
+      });
+    } else {
+      this.loadRoom(entry);
+    }
     this.initRecorder();
     this.initVoicePlayer();
   },
@@ -164,9 +207,28 @@ Page({
   onShow() {
     this.setData({ theme: app.getTheme ? app.getTheme() : "dark" });
     this.roomSocketClosedByPage = false;
-    this.connectRoomSocket();
+    // For admin mode, verify the session is still fresh before connecting.
+    if (this.data.adminMode) {
+      this.verifyAdminSessionBeforeConnect();
+    } else {
+      this.connectRoomSocket();
+    }
     if (wx.hideShareMenu) {
       wx.hideShareMenu();
+    }
+  },
+
+  verifyAdminSessionBeforeConnect() {
+    const stored = getStoredAdminSession();
+    const expiresAt = stored.expiresAt || 0;
+    const now = Math.floor(Date.now() / 1000);
+    if (expiresAt && expiresAt - now < 3600) {
+      // Session expiring soon — refresh it proactively.
+      this.ensureAdminSessionForRoom(true).finally(() => {
+        this.connectRoomSocket();
+      });
+    } else {
+      this.connectRoomSocket();
     }
   },
 
@@ -351,6 +413,11 @@ Page({
       this.startFlashCountdown();
       this.scrollChatToBottom();
       this.connectRoomSocket();
+      // Pre-fetch QR code in background so sharing is instant.
+      const scene = preparedRoom.scene || (preparedRoom.room && preparedRoom.room.entryCode) || "";
+      if (scene) {
+        api.downloadRoomQrcode(scene).catch(() => {});
+      }
     } catch (error) {
       if (this.pageUnloaded) {
         return;
@@ -608,6 +675,102 @@ Page({
     }
   },
 
+  async ensureMessageSender() {
+    if (this.data.adminMode) {
+      await this.ensureAdminSessionForRoom();
+      const manager = this.data.room && this.data.room.manager || {};
+      return {
+        id: this.data.adminId || manager.id || "admin_mimei",
+        senderType: "admin",
+        nickName: manager.name || "管理员",
+        avatarUrl: manager.avatar || ""
+      };
+    }
+    const profile = await this.ensureProfileSynced();
+    return {
+      ...profile,
+      senderType: "user"
+    };
+  },
+
+  async ensureAdminSessionForRoom(forceRefresh = false) {
+    if (!this.data.adminMode) {
+      return;
+    }
+    const stored = getStoredAdminSession();
+    const storedKey = stored.adminKey || "";
+    const storedId = stored.adminId || "";
+    if (!forceRefresh && !this.data.adminKey && storedKey) {
+      this.setDataIfAlive({
+        adminKey: storedKey,
+        adminId: this.data.adminId || storedId
+      });
+      return;
+    }
+    if (!forceRefresh && this.data.adminKey) {
+      return;
+    }
+    if (forceRefresh) {
+      app.globalData.adminSession = null;
+      wx.removeStorageSync("partyAdminSession");
+      this.setDataIfAlive({ adminKey: "" });
+    }
+    const code = await wxLoginCode();
+    if (!code || this.pageUnloaded) {
+      throw new Error("管理员登录刷新失败");
+    }
+    const loginRes = await api.adminLogin(this.data.adminId || storedId || "", code);
+    if (!loginRes || !loginRes.token) {
+      throw new Error("管理员登录刷新失败");
+    }
+    const adminSession = {
+      adminId: loginRes.admin && loginRes.admin.id || this.data.adminId || storedId || "",
+      adminKey: `token:${loginRes.token}`,
+      partyId: loginRes.party && loginRes.party.id || this.data.room && this.data.room.partyId || "",
+      expiresAt: loginRes.expiresAt || 0
+    };
+    app.globalData.adminSession = adminSession;
+    wx.setStorageSync("partyAdminSession", adminSession);
+    this.setDataIfAlive({
+      adminId: adminSession.adminId,
+      adminKey: adminSession.adminKey
+    });
+  },
+
+  isAdminSendAuthError(error) {
+    if (!this.data.adminMode) {
+      return false;
+    }
+    const message = error && error.message || "";
+    return /管理员|登录|密钥|权限|token|401|无效/.test(message);
+  },
+
+  async sendRoomMessageWithRetry(message, profile) {
+    try {
+      return await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message, {
+        senderType: profile.senderType,
+        senderId: profile.id,
+        adminKey: this.data.adminKey
+      });
+    } catch (error) {
+      if (!this.isAdminSendAuthError(error)) {
+        throw error;
+      }
+      console.warn("管理员消息发送鉴权失败，尝试刷新登录", error);
+      await this.ensureAdminSessionForRoom(true);
+      return api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message, {
+        senderType: profile.senderType,
+        senderId: profile.id,
+        adminKey: this.data.adminKey
+      });
+    }
+  },
+
+  showSendFailed(error, label = "消息") {
+    console.warn(`${label}发送失败`, error);
+    wx.showToast({ title: "发送失败，请检查网络", icon: "none" });
+  },
+
   initRecorder() {
     if (!wx.getRecorderManager) {
       return;
@@ -723,6 +886,33 @@ Page({
     });
   },
 
+  async onShareRoomQrcode() {
+    const room = this.data.room || {};
+    const scene = room.scene || room.room && room.room.entryCode || "";
+    if (!scene || this.data.sharingQrcode) {
+      this.showToastIfAlive({ title: "入局码暂不可用", icon: "none" });
+      return;
+    }
+    this.lightFeedback();
+    this.setDataIfAlive({ sharingQrcode: true });
+    try {
+      const qrcodePath = await api.downloadRoomQrcode(scene);
+      if (!qrcodePath) {
+        throw new Error("Qrcode path is empty");
+      }
+      if (wx.showShareImageMenu) {
+        wx.showShareImageMenu({ path: qrcodePath });
+      } else {
+        this.openMediaPreview(qrcodePath);
+      }
+    } catch (error) {
+      console.warn("入局二维码生成失败", error);
+      this.showToastIfAlive({ title: "二维码生成失败", icon: "none" });
+    } finally {
+      this.setDataIfAlive({ sharingQrcode: false });
+    }
+  },
+
   onInput(event) {
     const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail;
     this.setData({
@@ -758,22 +948,24 @@ Page({
     }
 
     this.setData({ sending: true });
-    const profile = await this.ensureProfileSynced();
-    if (this.pageUnloaded) {
-      return;
-    }
-    const message = {
-      type: "text",
-      senderId: profile.id,
-      isMine: true,
-      sender: profile.nickName,
-      avatar: profile.avatarUrl,
-      time: this.formatTime(new Date()),
-      text,
-      quote: this.data.quotedMessage
-    };
+    let message = null;
     try {
-      const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+      const profile = await this.ensureMessageSender();
+      if (this.pageUnloaded) {
+        return;
+      }
+      message = {
+        type: "text",
+        senderType: profile.senderType,
+        senderId: profile.id,
+        isMine: true,
+        sender: profile.nickName,
+        avatar: profile.avatarUrl,
+        time: this.formatTime(new Date()),
+        text,
+        quote: this.data.quotedMessage
+      };
+      const saved = await this.sendRoomMessageWithRetry(message, profile);
       if (this.pageUnloaded) {
         return;
       }
@@ -783,10 +975,7 @@ Page({
       if (this.pageUnloaded) {
         return;
       }
-      console.warn("消息发送失败，已本地追加", error);
-      this.appendMessage({ ...message, id: `local_msg_${Date.now()}` });
-      this.setData({ inputText: "", quotedMessage: null });
-      wx.showToast({ title: "后端暂未接收，已本地显示", icon: "none" });
+      this.showSendFailed(error, "消息");
     } finally {
       this.setDataIfAlive({ sending: false });
     }
@@ -928,25 +1117,27 @@ Page({
       return;
     }
     this.setData({ sending: true });
-    const profile = await this.ensureProfileSynced();
-    if (this.pageUnloaded) {
-      return;
-    }
-    const message = {
-      type: "voice",
-      senderId: profile.id,
-      isMine: true,
-      sender: profile.nickName || "我",
-      avatar: profile.avatarUrl,
-      time: this.formatTime(new Date()),
-      duration: review.duration,
-      durationSeconds: review.durationSeconds,
-      voicePath: review.tempFilePath,
-      text: "语音消息",
-      quote: this.data.quotedMessage
-    };
+    let message = null;
     try {
-      const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+      const profile = await this.ensureMessageSender();
+      if (this.pageUnloaded) {
+        return;
+      }
+      message = {
+        type: "voice",
+        senderType: profile.senderType,
+        senderId: profile.id,
+        isMine: true,
+        sender: profile.nickName || "我",
+        avatar: profile.avatarUrl,
+        time: this.formatTime(new Date()),
+        duration: review.duration,
+        durationSeconds: review.durationSeconds,
+        voicePath: review.tempFilePath,
+        text: "语音消息",
+        quote: this.data.quotedMessage
+      };
+      const saved = await this.sendRoomMessageWithRetry(message, profile);
       if (this.pageUnloaded) {
         return;
       }
@@ -956,9 +1147,7 @@ Page({
       if (this.pageUnloaded) {
         return;
       }
-      console.warn("语音消息发送失败，已本地追加", error);
-      this.appendMessage({ ...message, id: `local_voice_${Date.now()}` });
-      this.setData({ voiceReview: null, quotedMessage: null });
+      this.showSendFailed(error, "语音消息");
     } finally {
       this.setDataIfAlive({ sending: false });
     }
@@ -975,31 +1164,33 @@ Page({
       mediaType: ["image", "video"],
       sourceType: ["album", "camera"],
       success: async (res) => {
-        const profile = await this.ensureProfileSynced();
-        if (this.pageUnloaded) {
-          return;
-        }
         const file = res.tempFiles[0];
         const isVideo = file.fileType === "video" || /\.(mp4|mov|m4v)$/i.test(file.tempFilePath || "");
-        const message = {
-          type: isVideo ? "video" : "photo",
-          senderId: profile.id,
-          isMine: true,
-          sender: profile.nickName || "我",
-          avatar: profile.avatarUrl,
-          time: this.formatTime(new Date()),
-          text: "",
-          image: isVideo ? "" : file.tempFilePath,
-          video: isVideo ? file.tempFilePath : "",
-          mediaUrl: file.tempFilePath,
-          likeCount: 0,
-          isFlash: !isVideo && this.data.flashEnabled,
-          flashSeconds: this.data.flashSeconds,
-          flashRemainingSeconds: !isVideo && this.data.flashEnabled ? this.data.flashSeconds : 0,
-          quote: this.data.quotedMessage
-        };
+        let message = null;
         try {
-          const saved = await api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message);
+          const profile = await this.ensureMessageSender();
+          if (this.pageUnloaded) {
+            return;
+          }
+          message = {
+            type: isVideo ? "video" : "photo",
+            senderType: profile.senderType,
+            senderId: profile.id,
+            isMine: true,
+            sender: profile.nickName || "我",
+            avatar: profile.avatarUrl,
+            time: this.formatTime(new Date()),
+            text: "",
+            image: isVideo ? "" : file.tempFilePath,
+            video: isVideo ? file.tempFilePath : "",
+            mediaUrl: file.tempFilePath,
+            likeCount: 0,
+            isFlash: !isVideo && this.data.flashEnabled,
+            flashSeconds: this.data.flashSeconds,
+            flashRemainingSeconds: !isVideo && this.data.flashEnabled ? this.data.flashSeconds : 0,
+            quote: this.data.quotedMessage
+          };
+          const saved = await this.sendRoomMessageWithRetry(message, profile);
           if (this.pageUnloaded) {
             return;
           }
@@ -1009,9 +1200,7 @@ Page({
           if (this.pageUnloaded) {
             return;
           }
-          console.warn("媒体消息发送失败，已本地追加", error);
-          this.appendMessage({ ...message, id: `local_media_${Date.now()}` });
-          this.setData({ quotedMessage: null });
+          this.showSendFailed(error, "媒体消息");
         }
       }
     });
@@ -1022,12 +1211,17 @@ Page({
     if (!message) {
       return;
     }
+    const itemList = this.data.adminMode ? ["引用", "删除消息"] : ["引用", "举报"];
     wx.showActionSheet({
-      itemList: ["引用", "举报"],
+      itemList,
       success: (res) => {
         if (res.tapIndex === 0) {
           this.setData({ quotedMessage: this.buildQuoteFromMessage(message) });
           wx.showToast({ title: "已引用消息", icon: "none" });
+          return;
+        }
+        if (this.data.adminMode) {
+          this.deleteMessageAsAdmin(message);
           return;
         }
         this.chooseReportReason({
@@ -1035,6 +1229,33 @@ Page({
           targetId: message.id,
           targetUserId: message.senderId
         });
+      }
+    });
+  },
+
+  deleteMessageAsAdmin(message) {
+    if (!message || !message.id || message.isDeleted) {
+      return;
+    }
+    wx.showModal({
+      title: "删除消息",
+      content: "删除后房间内会显示该消息已被管理员删除。",
+      confirmText: "删除",
+      confirmColor: "#d93025",
+      success: async (res) => {
+        if (!res.confirm) {
+          return;
+        }
+        try {
+          const updated = await api.deleteMessage(message.id, "管理员删除", this.data.adminId || "admin_mimei", this.data.adminKey);
+          if (this.pageUnloaded) {
+            return;
+          }
+          this.replaceMessage(updated);
+          this.showToastIfAlive({ title: "消息已删除", icon: "success" });
+        } catch (error) {
+          this.showToastIfAlive({ title: error.message || "删除失败", icon: "none" });
+        }
       }
     });
   },
@@ -1713,6 +1934,9 @@ Page({
   },
 
   computeCanChat(room = this.data.room, profile = this.data.profileForm) {
+    if (this.data.adminMode) {
+      return true;
+    }
     const members = room && room.members || [];
     const member = members.find((item) => item.id === (profile && profile.id));
     return !!(member && member.seatStatus === "seated");
@@ -1771,16 +1995,22 @@ Page({
 
   prepareDisplayMessage(message) {
     const nextMessage = this.prepareFlashMessage(message);
-    if (nextMessage && nextMessage.quote && !nextMessage.quote.summary) {
-      return {
+    const messageWithMineState = nextMessage && this.data.adminMode && nextMessage.senderType === "admin"
+      ? {
         ...nextMessage,
+        isMine: nextMessage.senderId === (this.data.adminId || "admin_mimei")
+      }
+      : nextMessage;
+    if (messageWithMineState && messageWithMineState.quote && !messageWithMineState.quote.summary) {
+      return {
+        ...messageWithMineState,
         quote: {
-          ...nextMessage.quote,
-          summary: this.getQuoteSummary(nextMessage.quote)
+          ...messageWithMineState.quote,
+          summary: this.getQuoteSummary(messageWithMineState.quote)
         }
       };
     }
-    return nextMessage;
+    return messageWithMineState;
   },
 
   prepareFlashMessage(message) {

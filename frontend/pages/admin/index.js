@@ -7,6 +7,8 @@ const adminProfile = {
 }
 
 const avatarColors = ['#3b82f6', '#14b8a6', '#f97316', '#8b5cf6', '#ec4899', '#06b6d4', '#22c55e', '#f59e0b']
+const ADMIN_REALTIME_DEBOUNCE_MS = 300
+const ADMIN_REALTIME_RECONNECT_MS = 3000
 
 function hashText(value = '') {
   return String(value).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)
@@ -163,11 +165,11 @@ const mockTables = [
 
 Page({
   data: {
-    adminId: 'admin_mimei',
+    adminId: '',
     adminKey: '',
-    partyId: 'party_demo',
-    tables: mockTables,
-    visibleTables: mockTables,
+    partyId: '',
+    tables: [],
+    visibleTables: [],
     stats: {
       onlineMembers: 19,
       photoCount: 29,
@@ -188,6 +190,17 @@ Page({
       longitude: ''
     },
     creatingParty: false,
+    editForm: {
+      title: '',
+      tableNo: '',
+      capacity: '',
+      startsAt: '',
+      barName: '',
+      barAddress: '',
+      latitude: '',
+      longitude: ''
+    },
+    savingParty: false,
     endingParty: false,
     deletingParties: false,
     endedTables: [],
@@ -196,16 +209,16 @@ Page({
     reportFilter: 'pending',
     reportLoading: false,
     reportFilters: [
-      { key: 'pending', label: '待处理' },
-      { key: 'resolved', label: '已处理' },
-      { key: 'rejected', label: '已驳回' }
+      { key: 'pending', label: '!' },
+      { key: 'resolved', label: '✓' },
+      { key: 'rejected', label: '×' }
     ],
     memberActionSheetShow: false,
     memberActionSheetTitle: '',
     memberActionSheetActions: [],
     activeMemberAction: null,
-    selectedId: mockTables[0].id,
-    selectedTable: mockTables[0],
+    selectedId: '',
+    selectedTable: null,
     filter: 'all',
     copiedText: '',
     refreshing: false,
@@ -224,22 +237,36 @@ Page({
 
   onLoad(options = {}) {
     this.pageUnloaded = false
+    this.pageHidden = false
+    this.dashboardLoading = false
+    this.reportsLoading = false
+    this.adminRealtimePartyId = ''
     this.actionLocks = {}
+    const app = getApp()
+    const storedAdminSession = app.globalData.adminSession || wx.getStorageSync('partyAdminSession') || {}
     const nextData = {}
     if (options.partyId) {
       nextData.partyId = options.partyId
+    } else if (storedAdminSession.partyId) {
+      nextData.partyId = storedAdminSession.partyId
     }
     if (options.adminId) {
       nextData.adminId = options.adminId
+    } else if (storedAdminSession.adminId) {
+      nextData.adminId = storedAdminSession.adminId
     }
     if (options.adminKey) {
       nextData.adminKey = options.adminKey
+    } else if (storedAdminSession.adminKey) {
+      nextData.adminKey = storedAdminSession.adminKey
     }
     if (Object.keys(nextData).length) {
       this.setData(nextData)
     }
     this.prepareAdminSession().finally(() => {
-      this.loadDashboard()
+      this.loadDashboard({ preserveSelection: true }).finally(() => {
+        this.startAdminAutoRefresh()
+      })
     })
     this.updateSelected(this.data.selectedId)
     this.updateSafeArea()
@@ -247,15 +274,33 @@ Page({
 
   onShow() {
     const app = getApp()
+    this.pageHidden = false
     this.setData({ theme: app.getTheme ? app.getTheme() : 'dark' })
+    // Verify session freshness before connecting — prevents stale-token errors.
+    this.verifyAdminSession().then(() => {
+      this.startAdminAutoRefresh()
+      if (this.data.adminKey || this.data.adminId) {
+        this.loadDashboard({ silent: true, preserveSelection: true })
+      }
+    })
+  },
+
+  onHide() {
+    this.pageHidden = true
+    this.stopAdminAutoRefresh()
   },
 
   onUnload() {
     this.pageUnloaded = true
+    this.stopAdminAutoRefresh()
     clearTimeout(this.copyTimer)
     clearTimeout(this.refreshResetTimer)
+    clearTimeout(this.adminRealtimeTimer)
+    clearTimeout(this.adminReconnectTimer)
     this.copyTimer = null
     this.refreshResetTimer = null
+    this.adminRealtimeTimer = null
+    this.adminReconnectTimer = null
     this.actionLocks = {}
   },
 
@@ -308,6 +353,91 @@ Page({
       })
   },
 
+  startAdminAutoRefresh() {
+    const partyId = this.data.partyId
+    if (this.pageUnloaded || this.pageHidden || !partyId || this.adminSocketTask) {
+      return
+    }
+    // Don't connect with an empty or stale admin key.
+    if (!this.data.adminKey) {
+      return
+    }
+    this.adminRealtimePartyId = partyId
+    this.adminSocketTask = api.connectAdminSocket({
+      partyId,
+      adminId: this.data.adminId,
+      adminKey: this.data.adminKey
+    }, {
+      onMessage: (payload) => this.handleAdminRealtimeMessage(payload),
+      onClose: () => {
+        this.adminSocketTask = null
+        this.scheduleAdminRealtimeReconnect()
+      },
+      onError: (error) => {
+        console.warn('管理页实时连接异常', error)
+      }
+    })
+  },
+
+  stopAdminAutoRefresh() {
+    clearTimeout(this.adminRealtimeTimer)
+    clearTimeout(this.adminReconnectTimer)
+    this.adminRealtimeTimer = null
+    this.adminReconnectTimer = null
+    if (this.adminSocketTask && this.adminSocketTask.close) {
+      try {
+        this.adminSocketTask.close()
+      } catch (error) {
+        console.warn('管理页实时连接关闭失败', error)
+      }
+    }
+    this.adminSocketTask = null
+    this.adminRealtimePartyId = ''
+  },
+
+  scheduleAdminRealtimeReconnect() {
+    if (this.pageUnloaded || this.pageHidden || this.adminReconnectTimer) {
+      return
+    }
+    this.adminReconnectTimer = setTimeout(() => {
+      this.adminReconnectTimer = null
+      // Verify session before reconnecting — avoids repeated auth failures.
+      this.verifyAdminSession().then(() => {
+        this.startAdminAutoRefresh()
+      })
+    }, ADMIN_REALTIME_RECONNECT_MS)
+  },
+
+  handleAdminRealtimeMessage(payload = {}) {
+    if (!payload || payload.type === 'connected' || payload.type === 'pong') {
+      return
+    }
+    if (payload.type === 'report.created' || payload.type === 'report.updated') {
+      this.scheduleRealtimeRefresh(true)
+      return
+    }
+    if (payload.type === 'dashboard.changed') {
+      this.scheduleRealtimeRefresh(false)
+    }
+  },
+
+  scheduleRealtimeRefresh(includeReports = false) {
+    if (this.pageUnloaded || this.pageHidden) {
+      return
+    }
+    this.pendingRealtimeReportRefresh = this.pendingRealtimeReportRefresh || includeReports
+    clearTimeout(this.adminRealtimeTimer)
+    this.adminRealtimeTimer = setTimeout(() => {
+      this.adminRealtimeTimer = null
+      const shouldRefreshReports = this.pendingRealtimeReportRefresh
+      this.pendingRealtimeReportRefresh = false
+      this.loadDashboard({ silent: true, preserveSelection: true })
+      if (shouldRefreshReports) {
+        this.loadReports(this.data.reportFilter, { silent: true })
+      }
+    }, ADMIN_REALTIME_DEBOUNCE_MS)
+  },
+
   updateSafeArea() {
     try {
       const menu = wx.getMenuButtonBoundingClientRect && wx.getMenuButtonBoundingClientRect()
@@ -342,8 +472,19 @@ Page({
               return
             }
             if (loginRes && loginRes.token) {
-              this.setDataIfAlive({
+              const adminSession = {
+                adminId: loginRes.admin.id,
                 adminKey: `token:${loginRes.token}`,
+                partyId: loginRes.party && loginRes.party.id || this.data.partyId || '',
+                expiresAt: loginRes.expiresAt || 0
+              }
+              const app = getApp()
+              app.globalData.adminSession = adminSession
+              wx.setStorageSync('partyAdminSession', adminSession)
+              this.setDataIfAlive({
+                adminId: adminSession.adminId,
+                adminKey: adminSession.adminKey,
+                partyId: adminSession.partyId,
                 adminProfile: {
                   ...this.data.adminProfile,
                   id: loginRes.admin.id,
@@ -362,40 +503,154 @@ Page({
     })
   },
 
-  async loadDashboard() {
+  // Refresh the admin session when auth errors occur (e.g. "管理员密钥无效").
+  refreshAdminSession() {
+    if (this.pageUnloaded || this._sessionRefreshing) {
+      return Promise.resolve(false)
+    }
+    this._sessionRefreshing = true
+    return new Promise((resolve) => {
+      if (!wx.login) {
+        this._sessionRefreshing = false
+        resolve(false)
+        return
+      }
+      wx.login({
+        success: (res) => {
+          if (!res.code) {
+            this._sessionRefreshing = false
+            resolve(false)
+            return
+          }
+          api.adminLogin(this.data.adminId || '', res.code).then((loginRes) => {
+            if (this.pageUnloaded) {
+              return
+            }
+            if (loginRes && loginRes.token) {
+              const adminSession = {
+                adminId: loginRes.admin.id,
+                adminKey: `token:${loginRes.token}`,
+                partyId: loginRes.party && loginRes.party.id || this.data.partyId || '',
+                expiresAt: loginRes.expiresAt || 0
+              }
+              const app = getApp()
+              app.globalData.adminSession = adminSession
+              wx.setStorageSync('partyAdminSession', adminSession)
+              this.setDataIfAlive({
+                adminId: adminSession.adminId,
+                adminKey: adminSession.adminKey,
+                partyId: adminSession.partyId
+              })
+              // Reconnect WebSocket with the new token.
+              this.stopAdminAutoRefresh()
+              this.startAdminAutoRefresh()
+              resolve(true)
+            } else {
+              resolve(false)
+            }
+          }).catch(() => {
+            resolve(false)
+          }).finally(() => {
+            this._sessionRefreshing = false
+          })
+        },
+        fail: () => {
+          this._sessionRefreshing = false
+          resolve(false)
+        }
+      })
+    })
+  },
+
+  // Verify that the stored admin session is still valid.
+  // If the session looks expired, proactively refresh it.
+  verifyAdminSession() {
+    const stored = getApp().globalData.adminSession || wx.getStorageSync('partyAdminSession') || {}
+    const expiresAt = stored.expiresAt || 0
+    const now = Math.floor(Date.now() / 1000)
+    // Refresh if session expires in less than 1 hour.
+    if (expiresAt && expiresAt - now < 3600) {
+      return this.refreshAdminSession()
+    }
+    return Promise.resolve(true)
+  },
+
+  // Check if an error is an admin auth failure and try to refresh the session.
+  isAdminAuthError(error) {
+    const message = error && error.message || ''
+    return /管理员密钥|管理员登录|密钥无效|token|401|权限/.test(message)
+  },
+
+  // Wrap an admin API call with automatic session refresh on auth failure.
+  withAdminAuth(action) {
+    return Promise.resolve(action()).catch((error) => {
+      if (!this.isAdminAuthError(error)) {
+        throw error
+      }
+      console.warn('管理页鉴权失败，尝试刷新登录', error && error.message)
+      return this.refreshAdminSession().then((refreshed) => {
+        if (!refreshed) {
+          throw error
+        }
+        return action()
+      })
+    })
+  },
+
+  async loadDashboard(options = {}) {
     if (this.pageUnloaded) {
       return
     }
+    if (this.dashboardLoading) {
+      return
+    }
+    this.dashboardLoading = true
     try {
-      const dashboard = await api.getAdminDashboard(this.data.partyId, this.data.adminId, this.data.adminKey)
+      const dashboard = await this.withAdminAuth(() =>
+        api.getAdminDashboard(this.data.partyId, this.data.adminId, this.data.adminKey)
+      )
       if (this.pageUnloaded) {
         return
       }
-      if (!dashboard) {
-        this.recalculate(mockTables)
-        return
-      }
-
       const tables = (dashboard.tables || []).map(decorateTableAvatars)
+      const visibleTables = this.filterTables(tables, this.data.filter)
+      const selectedId = options.preserveSelection && tables.some((table) => table.id === this.data.selectedId)
+        ? this.data.selectedId
+        : (visibleTables[0] && visibleTables[0].id || tables[0] && tables[0].id || '')
+      const selectedTable = tables.find((table) => table.id === selectedId) || null
       this.setData({
+        partyId: dashboard.party && dashboard.party.id || this.data.partyId || '',
         tables,
         adminProfile: dashboard.adminProfile,
         currentParty: dashboard.party || null,
         wechatDraft: dashboard.adminProfile.wechatId,
-        selectedId: tables[0] ? tables[0].id : '',
-        selectedTable: tables[0] || null
+        selectedId,
+        selectedTable,
+        editForm: this.buildEditForm(selectedTable, dashboard.party || null)
       })
       this.recalculate(tables)
-      this.loadReports()
+      if (!this.pageHidden && this.data.partyId && this.adminRealtimePartyId !== this.data.partyId) {
+        this.stopAdminAutoRefresh()
+        this.startAdminAutoRefresh()
+      }
+      this.loadReports(this.data.reportFilter, { silent: options.silent })
     } catch (error) {
       if (this.pageUnloaded) {
         return
       }
-      this.recalculate(this.data.tables)
+      if (!options.silent) {
+        this.recalculate([])
+      }
       const message = error && error.message === '管理员密钥无效'
         ? '管理员未授权，请带 adminKey 进入'
-        : '后端暂不可用，显示本地数据'
-      this.showToastIfAlive({ title: message, icon: 'none' })
+        : '管理页加载失败'
+      if (!options.silent) {
+        this.showToastIfAlive({ title: message, icon: 'none' })
+      } else {
+        console.warn(message, error)
+      }
+    } finally {
+      this.dashboardLoading = false
     }
   },
 
@@ -472,6 +727,118 @@ Page({
     })
   },
 
+  buildEditForm(table = null, party = this.data.currentParty) {
+    const bar = party && party.bar || {}
+    return {
+      title: table && table.title || party && party.title || '',
+      tableNo: table && table.tableNo || '',
+      capacity: table && table.capacity ? String(table.capacity) : '',
+      startsAt: table && table.startsAtText || table && table.startsAt || party && party.startsAt || '',
+      barName: table && table.barName || bar.name || this.data.createForm.barName || '',
+      barAddress: table && table.barAddress || bar.address || this.data.createForm.barAddress || '',
+      latitude: table && table.latitude || bar.latitude || '',
+      longitude: table && table.longitude || bar.longitude || ''
+    }
+  },
+
+  onEditFormInput(event) {
+    const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
+    const { field } = dataset
+    if (!field) {
+      return
+    }
+    const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail
+    this.setData({
+      [`editForm.${field}`]: value || ''
+    })
+  },
+
+  chooseEditBarLocation() {
+    if (!wx.chooseLocation) {
+      this.showToastIfAlive({ title: '当前环境不支持定位选点', icon: 'none' })
+      return
+    }
+    wx.chooseLocation({
+      success: (res) => {
+        this.setDataIfAlive({
+          'editForm.barName': res.name || this.data.editForm.barName,
+          'editForm.barAddress': res.address || res.name || this.data.editForm.barAddress,
+          'editForm.latitude': res.latitude || '',
+          'editForm.longitude': res.longitude || ''
+        })
+      },
+      fail: (error) => {
+        const message = error && error.errMsg || ''
+        if (/cancel|auth deny|authorize no response|chooseLocation:fail/i.test(message)) {
+          return
+        }
+        this.showToastIfAlive({ title: '无法选点', icon: 'none' })
+      }
+    })
+  },
+
+  async saveSelectedParty() {
+    const table = this.data.selectedTable
+    const partyId = table && table.partyId || this.data.currentParty && this.data.currentParty.id || this.data.partyId
+    if (!table || !partyId) {
+      this.showToastIfAlive({ title: '请选择要修改的局', icon: 'none' })
+      return
+    }
+    const form = {
+      ...this.data.editForm,
+      title: this.data.editForm.title.trim(),
+      tableNo: this.data.editForm.tableNo.trim(),
+      startsAt: this.data.editForm.startsAt.trim(),
+      barName: this.data.editForm.barName.trim(),
+      barAddress: this.data.editForm.barAddress.trim(),
+      capacity: Number(this.data.editForm.capacity || 0)
+    }
+    if (!form.title || !form.tableNo || !form.startsAt || !form.barAddress) {
+      this.showToastIfAlive({ title: '请补全局名、桌号、时间和地址', icon: 'none' })
+      return
+    }
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(form.startsAt)) {
+      this.showToastIfAlive({ title: '时间格式如 2026-06-02 21:00', icon: 'none' })
+      return
+    }
+    if (!form.latitude || !form.longitude) {
+      this.showToastIfAlive({ title: '请点“地图选点”确认位置', icon: 'none' })
+      return
+    }
+    if (!form.capacity || form.capacity < 1 || form.capacity > 99) {
+      this.showToastIfAlive({ title: '人数需在 1-99 之间', icon: 'none' })
+      return
+    }
+    if (this.data.savingParty) {
+      return
+    }
+    this.setDataIfAlive({ savingParty: true })
+    try {
+      const res = await api.updateAdminParty({
+        ...form,
+        partyId,
+        tableId: table.id,
+        adminId: this.data.adminId,
+        adminKey: this.data.adminKey
+      })
+      if (this.pageUnloaded) {
+        return
+      }
+      if (res.table) {
+        this.replaceTable(res.table)
+      }
+      this.setDataIfAlive({
+        currentParty: res.party || this.data.currentParty,
+        editForm: this.buildEditForm(res.table || table, res.party || this.data.currentParty)
+      })
+      this.showToastIfAlive({ title: '局信息已保存', icon: 'success' })
+    } catch (error) {
+      this.showToastIfAlive({ title: error.message || '保存失败', icon: 'none' })
+    } finally {
+      this.setDataIfAlive({ savingParty: false })
+    }
+  },
+
   async createParty() {
     const form = {
       ...this.data.createForm,
@@ -521,10 +888,12 @@ Page({
         filter: 'all',
         selectedId: tables[0] ? tables[0].id : '',
         selectedTable: tables[0] || null,
+        editForm: this.buildEditForm(tables[0] || null, res.party || null),
         selectedEndedPartyIds: []
       })
       this.recalculate(tables)
       this.setTransientCopy('party_created')
+      this.loadDashboard()
     } catch (error) {
       this.showToastIfAlive({ title: '创建失败', icon: 'none' })
     } finally {
@@ -619,7 +988,8 @@ Page({
             tables,
             selectedEndedPartyIds: [],
             selectedId: tables[0] ? tables[0].id : '',
-            selectedTable: tables[0] || null
+            selectedTable: tables[0] || null,
+            editForm: this.buildEditForm(tables[0] || null)
           })
           this.recalculate(tables)
           this.showToastIfAlive({ title: '已删除', icon: 'success' })
@@ -644,6 +1014,29 @@ Page({
     this.updateSelected(id)
   },
 
+  enterSelectedRoomAsAdmin(event = {}) {
+    const dataset = event.currentTarget && event.currentTarget.dataset || {}
+    const tableId = dataset.id || this.data.selectedId
+    const table = this.data.tables.find((item) => item.id === tableId) || this.data.selectedTable
+    if (!table) {
+      this.showToastIfAlive({ title: '请选择要进入的局', icon: 'none' })
+      return
+    }
+    const partyId = table.partyId || this.data.currentParty && this.data.currentParty.id || this.data.partyId
+    const params = [
+      `partyId=${encodeURIComponent(partyId)}`,
+      `tableId=${encodeURIComponent(table.id)}`,
+      `admin=1`,
+      `adminId=${encodeURIComponent(this.data.adminId)}`
+    ]
+    if (this.data.adminKey) {
+      params.push(`adminKey=${encodeURIComponent(this.data.adminKey)}`)
+    }
+    wx.navigateTo({
+      url: `/frontend/pages/room/index?${params.join('&')}`
+    })
+  },
+
   setFilter(event) {
     const dataset = event.currentTarget.dataset || event.detail && event.detail.currentTarget && event.detail.currentTarget.dataset || event.detail || {}
     const filter = dataset.filter || dataset.detail || (typeof event.detail === 'string' ? event.detail : '')
@@ -658,7 +1051,8 @@ Page({
       filter,
       visibleTables,
       selectedId: visibleTables[0] ? visibleTables[0].id : '',
-      selectedTable: visibleTables[0] || null
+      selectedTable: visibleTables[0] || null,
+      editForm: this.buildEditForm(visibleTables[0] || null)
     })
   },
 
@@ -866,11 +1260,17 @@ Page({
     this.loadReports(filter)
   },
 
-  async loadReports(status = this.data.reportFilter) {
+  async loadReports(status = this.data.reportFilter, options = {}) {
     if (!this.data.partyId || this.pageUnloaded) {
       return
     }
-    this.setData({ reportLoading: true })
+    if (this.reportsLoading) {
+      return
+    }
+    this.reportsLoading = true
+    if (!options.silent) {
+      this.setData({ reportLoading: true })
+    }
     try {
       const reports = await api.getAdminReports(this.data.partyId, status, this.data.adminId, this.data.adminKey)
       if (this.pageUnloaded) {
@@ -882,6 +1282,7 @@ Page({
         console.warn('举报列表加载失败', error)
       }
     } finally {
+      this.reportsLoading = false
       if (!this.pageUnloaded) {
         this.setData({ reportLoading: false })
       }
@@ -1007,14 +1408,15 @@ Page({
           error: ''
         }
       })
-      return api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then(async (invite) => {
-        const link = invite.urlLink || ''
-        let qrcodePath = ''
-        try {
-          qrcodePath = await api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey)
-        } catch (error) {
+      // Fetch invite info and QR code in parallel to avoid sequential delays.
+      return Promise.all([
+        api.getTableInvite(table.id, this.data.adminId, this.data.adminKey),
+        api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey).catch((error) => {
           console.warn('小程序码下载失败', error)
-        }
+          return ''
+        })
+      ]).then(([invite, qrcodePath]) => {
+        const link = invite.urlLink || ''
         if (this.pageUnloaded) {
           return
         }
@@ -1122,10 +1524,16 @@ Page({
 
   updateSelected(id) {
     const selectedTable = this.data.tables.find((table) => table.id === id)
+    const decorated = selectedTable ? decorateTableAvatars(selectedTable) : null
     this.setData({
       selectedId: id,
-      selectedTable: selectedTable ? decorateTableAvatars(selectedTable) : null
+      selectedTable: decorated,
+      editForm: this.buildEditForm(decorated)
     })
+    // Pre-fetch the QR code in the background so showJoinInfo is instant.
+    if (decorated && decorated.status !== 'ended') {
+      api.downloadTableQrcode(decorated.id, this.data.adminId, this.data.adminKey).catch(() => {})
+    }
   },
 
   recalculate(tables) {
@@ -1283,7 +1691,7 @@ Page({
 
   filterTables(tables, filter) {
     if (filter === 'all') {
-      return tables
+      return tables.filter((table) => table.status !== 'ended')
     }
     if (filter === 'attention') {
       return tables.filter((table) => (table.ghostCount || 0) > 0)

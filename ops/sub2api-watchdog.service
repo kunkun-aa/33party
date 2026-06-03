@@ -1,0 +1,8 @@
+[Unit]
+Description=Sub2API local health watchdog
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sub2api-watchdog.sh

@@ -10,3 +10,7 @@ deploy/backend.env
 frontend_files_bundle.txt
 node_modules/
 miniprogram_npm/
+*.key
+*.pem
+private.*.key
+.weapp/

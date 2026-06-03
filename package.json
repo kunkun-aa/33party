@@ -4,8 +4,10 @@
   "description": "",
   "main": "app.js",
   "scripts": {
-    "release:check": "python scripts/release_check.py",
-    "test": "python scripts/release_check.py"
+    "mp:preview": "node scripts/miniprogram_ci.js preview",
+    "mp:upload": "node scripts/miniprogram_ci.js upload",
+    "release:check": "python3 scripts/release_check.py",
+    "test": "python3 scripts/release_check.py"
   },
   "keywords": [],
   "author": "",
@@ -13,5 +15,8 @@
   "type": "commonjs",
   "dependencies": {
     "tdesign-miniprogram": "^1.15.0"
+  },
+  "devDependencies": {
+    "miniprogram-ci": "^2.1.31"
   }
 }

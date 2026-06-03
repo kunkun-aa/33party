@@ -69,7 +69,7 @@
 }
 
 .filter-tabs {
-  order: 2;
+  order: 4;
   display: flex;
   gap: 10rpx;
   margin: 0;
@@ -79,7 +79,7 @@
 }
 
 .content-grid {
-  order: 3;
+  order: 5;
   display: grid;
   grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
   gap: 18rpx;
@@ -87,7 +87,7 @@
 }
 
 .ops-panel {
-  order: 4;
+  order: 2;
   display: grid;
   grid-template-columns: 0.85fr 1.15fr;
   gap: 14rpx;
@@ -95,7 +95,7 @@
 }
 
 .reports-panel {
-  order: 5;
+  order: 3;
 }
 
 .ended-panel {
@@ -478,6 +478,9 @@
 .primary-action,
 .more-action,
 .mini-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: 46rpx;
   padding: 0 16rpx;
   color: var(--blue);
@@ -486,6 +489,27 @@
   line-height: 46rpx;
   background: rgba(47, 128, 255, 0.1);
   border: 1rpx solid rgba(47, 128, 255, 0.16);
+}
+
+.primary-action.icon-action,
+.more-action.icon-action,
+.mini-action.icon-action {
+  width: 46rpx;
+  min-width: 46rpx;
+  padding: 0;
+}
+
+.primary-action::after,
+.more-action::after,
+.mini-action::after {
+  border: 0;
+}
+
+.mini-action.icon-action.loading,
+.primary-action.icon-action.loading,
+.more-action.icon-action.loading {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .ops-button {
@@ -642,11 +666,34 @@
 
 .admin-page .ops-input .t-input,
 .admin-page .ops-input .t-input__wrap,
-.admin-page .ops-input .t-input__content {
+.admin-page .ops-input .t-input__content,
+.admin-page .ops-input .t-input__control,
+.admin-page .ops-input .t-input__inner {
   min-height: 60rpx;
   padding: 0;
   background: transparent;
   border: 0;
+}
+
+.admin-page.theme-dark .ops-input,
+.admin-page.theme-dark .ops-input .t-input,
+.admin-page.theme-dark .ops-input .t-input__wrap,
+.admin-page.theme-dark .ops-input .t-input__content,
+.admin-page.theme-dark .ops-input .t-input__control,
+.admin-page.theme-dark .ops-input .t-input__inner,
+.admin-page.theme-dark .field-shell,
+.admin-page.theme-dark .ops-card > .ops-input {
+  color: var(--text-strong);
+  background: var(--panel-soft);
+}
+
+.admin-page.theme-dark .field-shell .ops-input,
+.admin-page.theme-dark .field-shell .ops-input .t-input,
+.admin-page.theme-dark .field-shell .ops-input .t-input__wrap,
+.admin-page.theme-dark .field-shell .ops-input .t-input__content,
+.admin-page.theme-dark .field-shell .ops-input .t-input__control,
+.admin-page.theme-dark .field-shell .ops-input .t-input__inner {
+  background: transparent;
 }
 
 .admin-page .ops-input .t-input__wrap {
@@ -987,6 +1034,27 @@
   gap: 8rpx;
 }
 
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  flex: 0 0 auto;
+}
+
+.room-entry-button {
+  width: 46rpx;
+  min-width: 46rpx;
+  height: 46rpx;
+}
+
+.edit-card {
+  margin-top: 18rpx;
+}
+
+.edit-form {
+  margin-top: 0;
+}
+
 .seat-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1148,7 +1216,8 @@
 
 .contact-actions .primary-action,
 .contact-actions .more-action {
-  width: 104rpx;
+  width: 52rpx;
+  min-width: 52rpx;
   height: 42rpx;
   padding: 0;
   font-size: 18rpx;

@@ -58,7 +58,10 @@
           <t-icon name="{{copiedText === 'admin_wechat_saved' ? 'check' : 'save'}}" size="28rpx" />
         </view>
       </view>
-      <t-input t-class="ops-input" t-class-input="ops-input-control" value="{{wechatDraft}}" bind:change="onWechatDraftInput" placeholder="输入管理员微信号" placeholder-class="ops-placeholder" borderless />
+      <view class="field-shell">
+        <t-icon name="user" size="24rpx" />
+        <t-input t-class="ops-input" t-class-input="ops-input-control" value="{{wechatDraft}}" bind:change="onWechatDraftInput" placeholder="输入管理员微信号" placeholder-class="ops-placeholder" borderless />
+      </view>
     </view>
 
     <view class="ops-card create-card">
@@ -135,6 +138,7 @@
         class="report-tab {{reportFilter === item.key ? 'active' : ''}}"
         data-filter="{{item.key}}"
         bindtap="setReportFilter"
+        aria-label="{{item.key === 'pending' ? '待处理' : item.key === 'resolved' ? '已处理' : '已驳回'}}"
       >{{item.label}}</view>
     </view>
     <view class="report-list" wx:if="{{reports.length}}">
@@ -144,7 +148,7 @@
             <text class="report-reason">{{item.reason}}</text>
             <text class="report-meta">{{item.tableNo}} · {{item.createdText}}</text>
           </view>
-          <text class="report-status {{item.status}}">{{item.status === 'pending' ? '待处理' : item.status === 'resolved' ? '已处理' : '已驳回'}}</text>
+          <text class="report-status {{item.status}}" aria-label="{{item.status === 'pending' ? '待处理' : item.status === 'resolved' ? '已处理' : '已驳回'}}">{{item.status === 'pending' ? '!' : item.status === 'resolved' ? '✓' : '×'}}</text>
         </view>
         <text class="report-line">举报人：{{item.reporterName}}</text>
         <text class="report-line">对象：{{item.targetType === 'message' ? '消息' : '用户'}} {{item.targetUserName || item.targetUserId}}</text>
@@ -152,33 +156,37 @@
         <view class="report-actions">
           <button
             wx:if="{{item.targetType === 'message' && item.targetMessage && !item.targetMessage.isDeleted}}"
-            class="mini-action"
+            class="mini-action icon-action"
             data-message-id="{{item.targetId}}"
             bindtap="deleteReportMessage"
-          >删消息</button>
+            aria-label="删除消息"
+          ><t-icon name="delete" size="24rpx" /></button>
           <button
             wx:if="{{item.targetUserId && !item.targetUserBannedAt}}"
-            class="mini-action danger"
+            class="mini-action danger icon-action"
             data-user-id="{{item.targetUserId}}"
             data-name="{{item.targetUserName}}"
             bindtap="banReportUser"
-          >封禁</button>
+            aria-label="封禁用户"
+          ><t-icon name="lock-on" size="24rpx" /></button>
           <button
             wx:if="{{item.targetUserId && item.targetUserBannedAt}}"
-            class="mini-action"
+            class="mini-action icon-action"
             data-user-id="{{item.targetUserId}}"
             data-name="{{item.targetUserName}}"
             bindtap="unbanReportUser"
-          >解封</button>
+            aria-label="解除封禁"
+          ><t-icon name="lock-off" size="24rpx" /></button>
           <button
             wx:if="{{item.targetMemberId}}"
-            class="mini-action"
+            class="mini-action icon-action"
             data-member-id="{{item.targetMemberId}}"
             data-name="{{item.targetUserName}}"
             bindtap="kickReportMember"
-          >移除成员</button>
-          <button wx:if="{{item.status === 'pending'}}" class="mini-action" data-report-id="{{item.id}}" data-status="resolved" bindtap="resolveReport">已处理</button>
-          <button wx:if="{{item.status === 'pending'}}" class="mini-action muted-action" data-report-id="{{item.id}}" data-status="rejected" bindtap="resolveReport">驳回</button>
+            aria-label="移除成员"
+          ><t-icon name="user-clear" size="24rpx" /></button>
+          <button wx:if="{{item.status === 'pending'}}" class="mini-action icon-action" data-report-id="{{item.id}}" data-status="resolved" bindtap="resolveReport" aria-label="标记已处理"><t-icon name="check" size="24rpx" /></button>
+          <button wx:if="{{item.status === 'pending'}}" class="mini-action muted-action icon-action" data-report-id="{{item.id}}" data-status="rejected" bindtap="resolveReport" aria-label="驳回举报"><t-icon name="close" size="24rpx" /></button>
         </view>
       </view>
     </view>
@@ -190,7 +198,9 @@
         <view>
           <text class="ops-title">已结束局</text>
         </view>
-      <button class="mini-action danger" bindtap="deleteSelectedEndedParties">{{deletingParties ? '删除中' : '删除选中'}}</button>
+      <button class="mini-action danger icon-action {{deletingParties ? 'loading' : ''}}" bindtap="deleteSelectedEndedParties" aria-label="删除选中">
+        <t-icon name="delete" size="24rpx" />
+      </button>
     </view>
     <view class="ended-list">
       <view
@@ -222,7 +232,12 @@
               <text class="table-no">{{item.title || currentParty.title || createForm.title}}</text>
               <text class="room-name">{{item.tableNo}}</text>
             </view>
-            <text class="status-pill {{item.status}}">{{item.statusText}}</text>
+            <view class="card-actions">
+              <text class="status-pill {{item.status}}">{{item.statusText}}</text>
+              <view class="panel-icon-button room-entry-button" data-id="{{item.id}}" catchtap="enterSelectedRoomAsAdmin" aria-label="管理员进房间">
+                <t-icon name="login" size="24rpx" />
+              </view>
+            </view>
           </view>
 
           <view class="card-main">
@@ -276,8 +291,62 @@
         </view>
         <view class="detail-actions">
           <text class="status-pill {{selectedTable.status}}">{{selectedTable.memberCount}}/{{selectedTable.capacity}}</text>
+          <view class="panel-icon-button {{savingParty ? 'loading' : ''}}" bindtap="saveSelectedParty" aria-label="保存局信息">
+            <t-icon name="{{savingParty ? 'loading' : 'save'}}" size="24rpx" />
+          </view>
+          <view class="panel-icon-button" bindtap="enterSelectedRoomAsAdmin" aria-label="管理员进房间">
+            <t-icon name="login" size="24rpx" />
+          </view>
           <view wx:if="{{selectedTable.status !== 'ended'}}" class="panel-icon-button danger {{endingParty ? 'loading' : ''}}" bindtap="endCurrentParty" aria-label="解散当前局">
             <t-icon name="poweroff" size="24rpx" />
+          </view>
+        </view>
+      </view>
+
+      <view class="edit-card">
+        <view class="section-title">局信息</view>
+        <view class="create-form edit-form">
+          <view class="form-item">
+            <view class="field-shell">
+              <t-icon name="flag" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="title" value="{{editForm.title}}" bind:change="onEditFormInput" placeholder="局名称" placeholder-class="ops-placeholder" borderless />
+            </view>
+          </view>
+          <view class="form-row">
+            <view class="form-item">
+              <view class="field-shell">
+                <t-icon name="location" size="24rpx" />
+                <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="tableNo" value="{{editForm.tableNo}}" bind:change="onEditFormInput" placeholder="桌号 / 房号" placeholder-class="ops-placeholder" borderless />
+              </view>
+            </view>
+            <view class="form-item form-item-small">
+              <view class="field-shell">
+                <t-icon name="user" size="24rpx" />
+                <t-input t-class="ops-input" t-class-input="ops-input-control" type="number" data-field="capacity" value="{{editForm.capacity}}" bind:change="onEditFormInput" placeholder="人数" placeholder-class="ops-placeholder" borderless />
+              </view>
+            </view>
+          </view>
+          <view class="form-item">
+            <view class="field-shell">
+              <t-icon name="time" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="startsAt" value="{{editForm.startsAt}}" bind:change="onEditFormInput" placeholder="2026-06-02 21:00" placeholder-class="ops-placeholder" borderless />
+            </view>
+          </view>
+          <view class="form-item">
+            <view class="field-shell">
+              <t-icon name="shop" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="barName" value="{{editForm.barName}}" bind:change="onEditFormInput" placeholder="酒吧名称" placeholder-class="ops-placeholder" borderless />
+            </view>
+          </view>
+          <view class="form-item">
+            <view class="field-shell address-shell">
+              <t-icon name="map-location" size="24rpx" />
+              <t-input t-class="ops-input" t-class-input="ops-input-control" data-field="barAddress" value="{{editForm.barAddress}}" bind:change="onEditFormInput" placeholder="详细地址" placeholder-class="ops-placeholder" borderless />
+              <view class="location-action icon-only" bindtap="chooseEditBarLocation" aria-label="地图选点">
+                <t-icon name="{{editForm.latitude && editForm.longitude ? 'check' : 'map-search'}}" size="24rpx" />
+              </view>
+            </view>
+            <text class="location-state">{{editForm.latitude && editForm.longitude ? '已确认地图坐标' : '用户端地图需要先确认坐标'}}</text>
           </view>
         </view>
       </view>
@@ -355,15 +424,16 @@
             </view>
             <view class="contact-actions">
               <button
-                class="primary-action {{copiedText === member.wechatId ? 'copied' : ''}}"
+                class="primary-action icon-action {{copiedText === member.wechatId ? 'copied' : ''}}"
                 data-name="{{member.name}}"
                 data-wechat="{{member.wechatId}}"
                 bindtap="contactMember"
+                aria-label="复制微信"
               >
-                {{copiedText === member.wechatId ? '已复制' : '联系'}}
+                <t-icon name="{{copiedText === member.wechatId ? 'check' : 'logo-wechat-stroke'}}" size="24rpx" />
               </button>
               <button
-                class="more-action"
+                class="more-action icon-action"
                 data-member-id="{{member.memberId}}"
                 data-user-id="{{member.id}}"
                 data-name="{{member.name}}"
@@ -371,8 +441,9 @@
                 data-is-head="{{selectedTable.headMemberId === member.memberId}}"
                 data-banned="{{member.bannedAt ? 'true' : 'false'}}"
                 bindtap="openMemberActions"
+                aria-label="成员管理"
               >
-                管理
+                <t-icon name="setting" size="24rpx" />
               </button>
             </view>
           </view>

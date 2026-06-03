@@ -3,11 +3,17 @@ const env = "prod";
 const configs = {
   dev: {
     apiBaseUrl: "http://127.0.0.1:7893",
-    messageTemplateId: ""
+    messageTemplateId: "",
+    defaultAdminId: "admin_mimei",
+    defaultAdminPartyId: "party_demo",
+    autoAdminRedirect: true
   },
   prod: {
     apiBaseUrl: "https://api.kunsir.ltd",
-    messageTemplateId: ""
+    messageTemplateId: "",
+    defaultAdminId: "admin_mimei",
+    defaultAdminPartyId: "party_demo",
+    autoAdminRedirect: true
   }
 };
 

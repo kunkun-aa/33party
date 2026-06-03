@@ -15,7 +15,10 @@ function parseEntry(options = {}) {
     scene: options.scene || "",
     partyId: options.partyId || sceneParams.partyId || sceneParams.p || "",
     tableId: options.tableId || sceneParams.tableId || sceneParams.t || "",
-    inviteCode: options.inviteCode || sceneParams.inviteCode || sceneParams.i || ""
+    inviteCode: options.inviteCode || sceneParams.inviteCode || sceneParams.i || "",
+    adminMode: options.admin === "1" || options.adminMode === "1" || sceneParams.admin === "1",
+    adminId: options.adminId || sceneParams.adminId || "",
+    adminKey: options.adminKey || sceneParams.adminKey || ""
   };
 }
 
