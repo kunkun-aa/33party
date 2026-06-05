@@ -465,8 +465,11 @@
       <view class="invite-code-card">
         <view class="invite-qrcode-box">
           <image wx:if="{{inviteInfo.qrcodePath}}" class="invite-qrcode" src="{{inviteInfo.qrcodePath}}" mode="aspectFit" bindtap="previewInviteQrcode"></image>
-          <view wx:elif="{{inviteLoading}}" class="invite-qrcode-placeholder">生成中</view>
-          <view wx:else class="invite-qrcode-placeholder">暂无小程序码</view>
+          <view wx:elif="{{inviteLoading}}" class="invite-qrcode-placeholder"><t-icon name="loading" size="40rpx" /></view>
+          <view wx:else class="invite-qrcode-placeholder">
+            <t-icon name="qrcode" size="44rpx" />
+            <text>点刷新重试</text>
+          </view>
         </view>
         <text class="invite-scene">{{inviteInfo.scene}}</text>
         <text class="invite-error" wx:if="{{inviteInfo.error}}">{{inviteInfo.error}}</text>
@@ -475,10 +478,13 @@
       <view class="invite-link-box" wx:if="{{inviteInfo.link}}">
         <text>{{inviteInfo.link}}</text>
       </view>
+      <view class="invite-link-box muted-box" wx:else>
+        <text>链接用于微信外部转发备用，优先让用户扫小程序码。</text>
+      </view>
 
       <view class="invite-actions">
-        <t-button t-class="invite-action" bind:click="saveInviteQrcode">保存小程序码</t-button>
-        <t-button t-class="invite-action secondary" bind:click="copyInviteLink">复制链接备用</t-button>
+        <t-button t-class="invite-action" bindtap="saveInviteQrcode">保存小程序码</t-button>
+        <t-button t-class="invite-action secondary" bindtap="copyInviteLink">复制链接备用</t-button>
       </view>
     </view>
   </view>

@@ -1,8 +1,65 @@
 const api = require("../../services/api");
 const { buildRoom } = require("../../services/mock");
 const { parseEntry } = require("../../utils/entry");
+const { EMOJI_GROUP_DATA, getEmojiGroupItems, findEmojiByIdOrValue } = require("../../utils/emoji-data");
 
 const app = getApp();
+
+const RECENT_EMOJI_STORAGE_KEY = "partyRecentEmojis";
+const MAX_RECENT_EMOJIS = 16;
+const RECENT_EMOJI_GROUP_KEY = "__recent";
+const EMOJI_PAGE_SIZE = 40;
+const EMOJI_GROUP_ICONS = {
+  "smileys-emotion": "😀",
+  "people-body": "👋",
+  "component": "🏻",
+  "animals-nature": "🌿",
+  "food-drink": "🍻",
+  "travel-places": "🚕",
+  "activities": "🎉",
+  "objects": "💡",
+  "symbols": "❤️",
+  "flags": "🏁"
+};
+
+function buildEmojiTabs(recentCount = 0) {
+  const recentTab = recentCount > 0
+    ? [{ key: RECENT_EMOJI_GROUP_KEY, icon: "◴", count: recentCount }]
+    : [];
+  return recentTab.concat(EMOJI_GROUP_DATA.map((group) => ({
+    key: group.key,
+    icon: EMOJI_GROUP_ICONS[group.key] || "☺",
+    count: group.codes ? group.codes.split(",").length : 0
+  })));
+}
+
+function findEmojiGroup(key) {
+  return EMOJI_GROUP_DATA.find((group) => group.key === key) || EMOJI_GROUP_DATA[0] || { key: "", codes: "" };
+}
+
+function findEmoji(id, value) {
+  return findEmojiByIdOrValue(id, value);
+}
+
+function chunkEmojiItems(items = []) {
+  const pages = [];
+  for (let index = 0; index < items.length; index += EMOJI_PAGE_SIZE) {
+    pages.push({
+      id: `emoji-page-${index / EMOJI_PAGE_SIZE}`,
+      items: items.slice(index, index + EMOJI_PAGE_SIZE)
+    });
+  }
+  return pages.length ? pages : [{ id: "emoji-page-empty", items: [] }];
+}
+
+function getEmojiPager(groupKey, recentEmojis = []) {
+  const isRecent = groupKey === RECENT_EMOJI_GROUP_KEY;
+  const items = isRecent ? recentEmojis : getEmojiGroupItems(findEmojiGroup(groupKey).key);
+  return {
+    pages: chunkEmojiItems(items),
+    total: items.length
+  };
+}
 
 function isLocalAvatar(path = "") {
   return /^(wxfile|http:\/\/tmp|file):\/\//.test(path) || /^\/(tmp|var|private|storage)\//.test(path);
@@ -152,6 +209,13 @@ Page({
     flashEnabled: false,
     flashSeconds: 5,
     plusPanelOpen: false,
+    emojiPanelOpen: false,
+    emojiGroups: buildEmojiTabs(0),
+    activeEmojiGroupKey: EMOJI_GROUP_DATA[0] && EMOJI_GROUP_DATA[0].key || "",
+    emojiPages: getEmojiPager(EMOJI_GROUP_DATA[0] && EMOJI_GROUP_DATA[0].key || "").pages,
+    emojiPageIndex: 0,
+    emojiTotalCount: getEmojiPager(EMOJI_GROUP_DATA[0] && EMOJI_GROUP_DATA[0].key || "").total,
+    recentEmojis: [],
     voiceInputMode: false,
     voiceRecording: false,
     voiceRecordSeconds: 0,
@@ -190,6 +254,7 @@ Page({
     });
     this.loadRemoteConfig();
     this.loadProfile();
+    this.loadRecentEmojis();
     this.ensureOpenid();
     if (!hasExplicitRoomEntry(entry) && app.waitForAdminRedirect) {
       app.waitForAdminRedirect().then((redirected) => {
@@ -413,6 +478,7 @@ Page({
       this.startFlashCountdown();
       this.scrollChatToBottom();
       this.connectRoomSocket();
+      this.syncRoomMessagesFromServer();
       // Pre-fetch QR code in background so sharing is instant.
       const scene = preparedRoom.scene || (preparedRoom.room && preparedRoom.room.entryCode) || "";
       if (scene) {
@@ -424,6 +490,9 @@ Page({
       }
       if (error && /已结束/.test(error.message || "")) {
         console.warn("房间已结束", error);
+        if (await this.redirectAdminFromEndedRoom()) {
+          return;
+        }
         this.setData({
           room: null,
           canChat: false,
@@ -447,6 +516,36 @@ Page({
         title: "后端连接失败，已显示演示数据",
         icon: "none"
       });
+    }
+  },
+
+  async redirectAdminFromEndedRoom() {
+    const stored = getStoredAdminSession();
+    if (!stored.adminId && !stored.adminKey) {
+      return false;
+    }
+    try {
+      const code = await wxLoginCode();
+      if (!code || this.pageUnloaded) {
+        return false;
+      }
+      const loginRes = await api.adminLogin(stored.adminId || "", code);
+      if (!loginRes || !loginRes.token || !loginRes.admin) {
+        return false;
+      }
+      const adminSession = {
+        adminId: loginRes.admin.id,
+        adminKey: `token:${loginRes.token}`,
+        partyId: loginRes.party && loginRes.party.id || "",
+        expiresAt: loginRes.expiresAt || 0
+      };
+      app.globalData.adminSession = adminSession;
+      wx.setStorageSync("partyAdminSession", adminSession);
+      wx.reLaunch({ url: "/frontend/pages/admin/index" });
+      return true;
+    } catch (loginError) {
+      console.info("已结束房间未切回管理页，当前微信不是管理员或登录已失效", loginError);
+      return false;
     }
   },
 
@@ -623,6 +722,8 @@ Page({
       if (wasEditing) {
         this.applyUserProfileUpdate(savedProfile);
         this.showToastIfAlive({ title: "资料已更新", icon: "none" });
+      } else {
+        this.showToastIfAlive({ title: "已进入主局", icon: "success" });
       }
       this.scrollChatToBottom();
       if (!wasEditing) {
@@ -758,9 +859,17 @@ Page({
       }
       console.warn("管理员消息发送鉴权失败，尝试刷新登录", error);
       await this.ensureAdminSessionForRoom(true);
-      return api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, message, {
-        senderType: profile.senderType,
-        senderId: profile.id,
+      const refreshedProfile = await this.ensureMessageSender();
+      const retryMessage = {
+        ...message,
+        senderType: refreshedProfile.senderType,
+        senderId: refreshedProfile.id,
+        sender: refreshedProfile.nickName || message.sender,
+        avatar: refreshedProfile.avatarUrl || message.avatar
+      };
+      return api.sendRoomMessage(this.data.room.partyId, this.data.room.tableId, retryMessage, {
+        senderType: refreshedProfile.senderType,
+        senderId: refreshedProfile.id,
         adminKey: this.data.adminKey
       });
     }
@@ -915,17 +1024,25 @@ Page({
 
   onInput(event) {
     const value = event.detail && event.detail.value !== undefined ? event.detail.value : event.detail;
-    this.setData({
-      inputText: value || "",
-      plusPanelOpen: false
-    });
+    this.setData({ inputText: value || "" });
+  },
+
+  onInputFocus() {
+    if (this.data.plusPanelOpen || this.data.emojiPanelOpen || this.data.voiceInputMode) {
+      this.setData({
+        plusPanelOpen: false,
+        emojiPanelOpen: false,
+        voiceInputMode: false
+      });
+    }
   },
 
   toggleVoiceInputMode() {
     this.lightFeedback();
     this.setData({
       voiceInputMode: !this.data.voiceInputMode,
-      plusPanelOpen: false
+      plusPanelOpen: false,
+      emojiPanelOpen: false
     });
   },
 
@@ -933,8 +1050,39 @@ Page({
     this.lightFeedback();
     this.setData({
       plusPanelOpen: !this.data.plusPanelOpen,
+      emojiPanelOpen: false,
       voiceInputMode: false
     });
+  },
+
+  toggleEmojiPanel() {
+    this.lightFeedback();
+    this.setData({
+      emojiPanelOpen: !this.data.emojiPanelOpen,
+      plusPanelOpen: false,
+      voiceInputMode: false
+    });
+  },
+
+  onEmojiGroupTap(event) {
+    const key = event.currentTarget.dataset.key;
+    if (!key || key === this.data.activeEmojiGroupKey) {
+      return;
+    }
+    const pager = getEmojiPager(key, this.data.recentEmojis);
+    this.setData({
+      activeEmojiGroupKey: key,
+      emojiPages: pager.pages,
+      emojiPageIndex: 0,
+      emojiTotalCount: pager.total
+    });
+  },
+
+  onEmojiSwiperChange(event) {
+    const current = event.detail && typeof event.detail.current === "number" ? event.detail.current : 0;
+    if (current !== this.data.emojiPageIndex) {
+      this.setData({ emojiPageIndex: current });
+    }
   },
 
   async onSendText() {
@@ -954,6 +1102,7 @@ Page({
       if (this.pageUnloaded) {
         return;
       }
+      const createdAt = new Date();
       message = {
         type: "text",
         senderType: profile.senderType,
@@ -961,7 +1110,8 @@ Page({
         isMine: true,
         sender: profile.nickName,
         avatar: profile.avatarUrl,
-        time: this.formatTime(new Date()),
+        createdAt: createdAt.toISOString(),
+        time: this.formatTime(createdAt),
         text,
         quote: this.data.quotedMessage
       };
@@ -976,6 +1126,56 @@ Page({
         return;
       }
       this.showSendFailed(error, "消息");
+    } finally {
+      this.setDataIfAlive({ sending: false });
+    }
+  },
+
+  async onSendEmoji(event) {
+    const emojiId = event.currentTarget.dataset.id;
+    const emojiValue = event.currentTarget.dataset.value;
+    const emoji = findEmoji(emojiId, emojiValue);
+    if (!emoji || this.data.sending || !this.data.room) {
+      return;
+    }
+    if (!this.canCurrentUserChat()) {
+      wx.showToast({ title: "占位后才能发言", icon: "none" });
+      return;
+    }
+
+    this.setData({ sending: true });
+    let message = null;
+    try {
+      const profile = await this.ensureMessageSender();
+      if (this.pageUnloaded) {
+        return;
+      }
+      const createdAt = new Date();
+      message = {
+        type: "emoji",
+        senderType: profile.senderType,
+        senderId: profile.id,
+        isMine: true,
+        sender: profile.nickName || "我",
+        avatar: profile.avatarUrl,
+        createdAt: createdAt.toISOString(),
+        time: this.formatTime(createdAt),
+        text: emoji.value,
+        emojiId: emoji.id,
+        quote: this.data.quotedMessage
+      };
+      const saved = await this.sendRoomMessageWithRetry(message, profile);
+      if (this.pageUnloaded) {
+        return;
+      }
+      this.rememberRecentEmoji(emoji);
+      this.appendMessage(saved);
+      this.setData({ emojiPanelOpen: true, quotedMessage: null });
+    } catch (error) {
+      if (this.pageUnloaded) {
+        return;
+      }
+      this.showSendFailed(error, "表情");
     } finally {
       this.setDataIfAlive({ sending: false });
     }
@@ -1123,6 +1323,7 @@ Page({
       if (this.pageUnloaded) {
         return;
       }
+      const createdAt = new Date();
       message = {
         type: "voice",
         senderType: profile.senderType,
@@ -1130,7 +1331,8 @@ Page({
         isMine: true,
         sender: profile.nickName || "我",
         avatar: profile.avatarUrl,
-        time: this.formatTime(new Date()),
+        createdAt: createdAt.toISOString(),
+        time: this.formatTime(createdAt),
         duration: review.duration,
         durationSeconds: review.durationSeconds,
         voicePath: review.tempFilePath,
@@ -1172,6 +1374,7 @@ Page({
           if (this.pageUnloaded) {
             return;
           }
+          const createdAt = new Date();
           message = {
             type: isVideo ? "video" : "photo",
             senderType: profile.senderType,
@@ -1179,7 +1382,8 @@ Page({
             isMine: true,
             sender: profile.nickName || "我",
             avatar: profile.avatarUrl,
-            time: this.formatTime(new Date()),
+            createdAt: createdAt.toISOString(),
+            time: this.formatTime(createdAt),
             text: "",
             image: isVideo ? "" : file.tempFilePath,
             video: isVideo ? file.tempFilePath : "",
@@ -1308,6 +1512,49 @@ Page({
 
   clearQuote() {
     this.setData({ quotedMessage: null });
+  },
+
+  loadRecentEmojis() {
+    let recent = [];
+    try {
+      recent = wx.getStorageSync(RECENT_EMOJI_STORAGE_KEY) || [];
+    } catch (error) {
+      recent = [];
+    }
+    const normalized = recent
+      .map((emoji) => findEmoji(emoji.id, emoji.value))
+      .filter(Boolean)
+      .slice(0, MAX_RECENT_EMOJIS);
+    this.setData({
+      recentEmojis: normalized,
+      emojiGroups: buildEmojiTabs(normalized.length)
+    });
+  },
+
+  rememberRecentEmoji(emoji) {
+    if (!emoji || !emoji.id) {
+      return;
+    }
+    const nextRecent = [
+      emoji,
+      ...(this.data.recentEmojis || []).filter((item) => item.id !== emoji.id)
+    ].slice(0, MAX_RECENT_EMOJIS);
+    const update = {
+      recentEmojis: nextRecent,
+      emojiGroups: buildEmojiTabs(nextRecent.length)
+    };
+    if (this.data.activeEmojiGroupKey === RECENT_EMOJI_GROUP_KEY) {
+      const pager = getEmojiPager(RECENT_EMOJI_GROUP_KEY, nextRecent);
+      update.emojiPages = pager.pages;
+      update.emojiTotalCount = pager.total;
+      update.emojiPageIndex = Math.min(this.data.emojiPageIndex, pager.pages.length - 1);
+    }
+    this.setData(update);
+    try {
+      wx.setStorageSync(RECENT_EMOJI_STORAGE_KEY, nextRecent);
+    } catch (error) {
+      console.warn("保存最近表情失败", error);
+    }
   },
 
   findMessageById(id) {
@@ -1713,6 +1960,36 @@ Page({
     this.persistRoomMessages();
   },
 
+  async syncRoomMessagesFromServer() {
+    const room = this.data.room;
+    if (!room || !room.partyId || !room.tableId) {
+      return;
+    }
+    try {
+      const serverMessages = await api.getRoomMessages(room.partyId, room.tableId);
+      if (this.pageUnloaded || !this.data.room || this.data.room.partyId !== room.partyId || this.data.room.tableId !== room.tableId) {
+        return;
+      }
+      const mergedRoom = this.mergeLocalRoomMessages({
+        ...this.data.room,
+        messages: [
+          ...(this.data.room.messages || []),
+          ...(serverMessages || [])
+        ]
+      });
+      const preparedRoom = this.decorateRoomAvatars(this.prepareFlashMessages(this.hydrateRoomMessageProfiles(mergedRoom)));
+      this.setData({
+        "room.messages": preparedRoom.messages || []
+      });
+      this.persistRoomMessages();
+      this.cacheVisibleMedia();
+      this.startFlashCountdown();
+      this.scrollChatToBottom();
+    } catch (error) {
+      console.warn("同步房间消息失败", error);
+    }
+  },
+
   connectRoomSocket() {
     const room = this.data.room;
     if (!room || this.roomSocket) {
@@ -1795,6 +2072,18 @@ Page({
       this.applyMemberUpdate(payload.member, payload.table);
       return;
     }
+    if (payload.type === "member.presence.updated") {
+      this.applyMemberPresenceUpdate(payload.userId, payload.online);
+      return;
+    }
+    if (payload.type === "room.updated" && payload.room) {
+      this.applyRoomRealtimeUpdate(payload.room);
+      return;
+    }
+    if (payload.type === "member.removed" && payload.room) {
+      this.applyRoomRealtimeUpdate(payload.room);
+      return;
+    }
     if (payload.type === "party.ended") {
       this.handlePartyEnded();
     }
@@ -1817,6 +2106,8 @@ Page({
     const name = user.nickName || user.nickname || user.name || "新朋友";
     const avatar = user.avatar || user.avatarUrl || "";
     const gender = user.gender || "unknown";
+    const bannedAt = user.bannedAt || user.banned_at || "";
+    const banReason = user.banReason || user.ban_reason || "";
     const avatarText = name ? String(name).slice(0, 1).toUpperCase() : "?";
     const currentUserId = this.data.profileForm && this.data.profileForm.id;
     const members = (this.data.room.members || []).map((member) => {
@@ -1828,7 +2119,9 @@ Page({
         name,
         gender,
         avatar,
-        avatarText
+        avatarText,
+        bannedAt,
+        banReason
       };
     });
     const messages = (this.data.room.messages || []).map((message) => {
@@ -1855,6 +2148,8 @@ Page({
         avatar,
         avatarText,
         gender,
+        bannedAt,
+        banReason,
         remoteSynced: true,
         agreementAccepted: true,
         ageConfirmed: true
@@ -1916,8 +2211,56 @@ Page({
     }, 900);
   },
 
+  applyMemberPresenceUpdate(userId, online) {
+    if (!this.data.room || !userId) {
+      return;
+    }
+    const members = (this.data.room.members || []).map((member) => (
+      member.id === userId ? { ...member, online: !!online } : member
+    ));
+    const messages = (this.data.room.messages || []).map((message) => {
+      if (message.senderId !== userId) {
+        return message;
+      }
+      return {
+        ...message,
+        online: !!online
+      };
+    });
+    this.setData({
+      "room.members": this.sortMembers(members),
+      "room.messages": messages
+    });
+  },
+
+  applyRoomRealtimeUpdate(nextRoom = {}) {
+    if (!this.data.room) {
+      return;
+    }
+    const members = this.sortMembers(nextRoom.members || this.data.room.members || []);
+    const dataPatch = {
+      room: {
+        ...this.data.room,
+        ...nextRoom,
+        messages: this.data.room.messages || [],
+        members
+      },
+      canChat: this.computeCanChat({
+        ...this.data.room,
+        ...nextRoom,
+        members
+      }, this.data.profileForm)
+    };
+    this.setData(dataPatch);
+  },
+
   sortMembers(members = []) {
     return members.slice().sort((left, right) => {
+      const leftHead = left.isHead || left.role === "局头" || left.role === "head" ? 0 : 1;
+      const rightHead = right.isHead || right.role === "局头" || right.role === "head" ? 0 : 1;
+      if (leftHead !== rightHead) {
+        return leftHead - rightHead;
+      }
       const leftRank = left.seatStatus === "seated" ? 0 : 1;
       const rightRank = right.seatStatus === "seated" ? 0 : 1;
       if (leftRank !== rightRank) {
@@ -1937,8 +2280,14 @@ Page({
     if (this.data.adminMode) {
       return true;
     }
+    if (profile && (profile.bannedAt || profile.banned_at)) {
+      return false;
+    }
     const members = room && room.members || [];
     const member = members.find((item) => item.id === (profile && profile.id));
+    if (member && (member.bannedAt || member.banned_at)) {
+      return false;
+    }
     return !!(member && member.seatStatus === "seated");
   },
 
@@ -1994,11 +2343,18 @@ Page({
   },
 
   prepareDisplayMessage(message) {
-    const nextMessage = this.prepareFlashMessage(message);
-    const messageWithMineState = nextMessage && this.data.adminMode && nextMessage.senderType === "admin"
+    const normalizedMessage = message && message.type === "emoji"
+      ? {
+        ...message,
+        text: message.text || "",
+        image: message.image || message.mediaUrl || ""
+      }
+      : message;
+    const nextMessage = this.prepareFlashMessage(normalizedMessage);
+    const messageWithMineState = nextMessage
       ? {
         ...nextMessage,
-        isMine: nextMessage.senderId === (this.data.adminId || "admin_mimei")
+        isMine: this.isMessageFromCurrentSender(nextMessage)
       }
       : nextMessage;
     if (messageWithMineState && messageWithMineState.quote && !messageWithMineState.quote.summary) {
@@ -2011,6 +2367,19 @@ Page({
       };
     }
     return messageWithMineState;
+  },
+
+  isMessageFromCurrentSender(message = {}) {
+    const senderType = message.senderType || "user";
+    const senderId = message.senderId || "";
+    if (!senderId) {
+      return false;
+    }
+    if (senderType === "admin") {
+      return !!(this.data.adminMode && senderId === (this.data.adminId || "admin_mimei"));
+    }
+    const currentProfile = this.data.profileForm && this.data.profileForm.id ? this.data.profileForm : (app.globalData.userProfile || {});
+    return !!(!this.data.adminMode && currentProfile.id && senderId === currentProfile.id);
   },
 
   prepareFlashMessage(message) {
@@ -2122,11 +2491,43 @@ Page({
     return new Date(text);
   },
 
-  formatTime(date) {
+  getBeijingParts(date) {
     const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-    const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
-    const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
-    return `${hour}:${minute}`;
+    return {
+      year: beijing.getUTCFullYear(),
+      month: beijing.getUTCMonth() + 1,
+      day: beijing.getUTCDate(),
+      hour: beijing.getUTCHours(),
+      minute: beijing.getUTCMinutes()
+    };
+  },
+
+  beijingDateTimestamp(year, month, day, hour = 0, minute = 0) {
+    return Date.UTC(year, month - 1, day, hour - 8, minute, 0);
+  },
+
+  formatTime(date) {
+    if (!date || isNaN(date.getTime())) {
+      return "";
+    }
+    const beijing = this.getBeijingParts(date);
+    const today = this.getBeijingParts(new Date());
+    const messageDay = Date.UTC(beijing.year, beijing.month - 1, beijing.day);
+    const todayDay = Date.UTC(today.year, today.month - 1, today.day);
+    const dayDiff = Math.round((todayDay - messageDay) / 86400000);
+    const hour = `${beijing.hour}`.padStart(2, "0");
+    const minute = `${beijing.minute}`.padStart(2, "0");
+    const time = `${hour}:${minute}`;
+    if (dayDiff === 0) {
+      return `今天 ${time}`;
+    }
+    if (dayDiff === 1) {
+      return `昨天 ${time}`;
+    }
+    if (beijing.year === today.year) {
+      return `${beijing.month}月${beijing.day}日 ${time}`;
+    }
+    return `${beijing.year}-${`${beijing.month}`.padStart(2, "0")}-${`${beijing.day}`.padStart(2, "0")} ${time}`;
   },
 
   getLocalMessageKey(room = this.data.room) {
@@ -2180,9 +2581,25 @@ Page({
     if (!isNaN(parsed)) {
       return parsed;
     }
-    const time = String(message.time || "").match(/^(\d{1,2}):(\d{2})$/);
-    if (time) {
-      return Number(time[1]) * 60 + Number(time[2]);
+    const text = String(message.time || "");
+    const today = this.getBeijingParts(new Date());
+    const fullDate = text.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})$/);
+    if (fullDate) {
+      return this.beijingDateTimestamp(Number(fullDate[1]), Number(fullDate[2]), Number(fullDate[3]), Number(fullDate[4]), Number(fullDate[5]));
+    }
+    const monthDate = text.match(/^(\d{1,2})月(\d{1,2})日\s+(\d{1,2}):(\d{2})$/);
+    if (monthDate) {
+      return this.beijingDateTimestamp(today.year, Number(monthDate[1]), Number(monthDate[2]), Number(monthDate[3]), Number(monthDate[4]));
+    }
+    const relativeTime = text.match(/^(今天|昨天)\s+(\d{1,2}):(\d{2})$/);
+    if (relativeTime) {
+      const dayOffset = relativeTime[1] === "昨天" ? -1 : 0;
+      const day = new Date(Date.UTC(today.year, today.month - 1, today.day + dayOffset));
+      return this.beijingDateTimestamp(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), Number(relativeTime[2]), Number(relativeTime[3]));
+    }
+    const timeOnly = text.match(/^(\d{1,2}):(\d{2})$/);
+    if (timeOnly) {
+      return this.beijingDateTimestamp(today.year, today.month, today.day, Number(timeOnly[1]), Number(timeOnly[2]));
     }
     return 0;
   },

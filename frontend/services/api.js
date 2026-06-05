@@ -188,11 +188,14 @@ function normalizeProfile(profile = {}) {
 function normalizeMember(member = {}) {
   const name = member.nickname || member.nickName || member.name || "新朋友";
   const avatarUrl = normalizeAvatarUrl(member.avatarUrl || member.avatar_url || member.avatar || "");
+  const rawRole = member.role || "成员";
+  const isHead = !!member.isHead || rawRole === "head" || rawRole === "局头";
   return {
     id: member.id,
     memberId: member.memberId,
     name,
-    role: member.role || "成员",
+    role: isHead ? "局头" : rawRole === "guest" ? "成员" : rawRole,
+    isHead,
     gender: member.gender || "unknown",
     seatStatus: member.seatStatus || "ghost",
     seatStatusText: member.seatStatus === "seated" ? "已占位" : "未占位",
@@ -207,6 +210,11 @@ function normalizeMember(member = {}) {
 
 function sortMembers(members = []) {
   return members.slice().sort((left, right) => {
+    const leftHead = left.isHead || left.role === "局头" ? 0 : 1;
+    const rightHead = right.isHead || right.role === "局头" ? 0 : 1;
+    if (leftHead !== rightHead) {
+      return leftHead - rightHead;
+    }
     const leftRank = left.seatStatus === "seated" ? 0 : 1;
     const rightRank = right.seatStatus === "seated" ? 0 : 1;
     if (leftRank !== rightRank) {
@@ -241,11 +249,49 @@ function parseApiDate(value) {
   return new Date(text);
 }
 
-function formatBeijingTime(date) {
+function getBeijingParts(date) {
   const beijing = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const hour = `${beijing.getUTCHours()}`.padStart(2, "0");
-  const minute = `${beijing.getUTCMinutes()}`.padStart(2, "0");
+  return {
+    year: beijing.getUTCFullYear(),
+    month: beijing.getUTCMonth() + 1,
+    day: beijing.getUTCDate(),
+    hour: beijing.getUTCHours(),
+    minute: beijing.getUTCMinutes()
+  };
+}
+
+function formatBeijingTime(date) {
+  if (!date || isNaN(date.getTime())) {
+    return "";
+  }
+  const beijing = getBeijingParts(date);
+  const hour = `${beijing.hour}`.padStart(2, "0");
+  const minute = `${beijing.minute}`.padStart(2, "0");
   return `${hour}:${minute}`;
+}
+
+function formatBeijingChatTime(date, now = new Date()) {
+  if (!date || isNaN(date.getTime())) {
+    return "";
+  }
+  const beijing = getBeijingParts(date);
+  const today = getBeijingParts(now);
+  const messageDay = Date.UTC(beijing.year, beijing.month - 1, beijing.day);
+  const todayDay = Date.UTC(today.year, today.month - 1, today.day);
+  const dayDiff = Math.round((todayDay - messageDay) / 86400000);
+  const hour = `${beijing.hour}`.padStart(2, "0");
+  const minute = `${beijing.minute}`.padStart(2, "0");
+  const time = `${hour}:${minute}`;
+  if (dayDiff === 0) {
+    return `今天 ${time}`;
+  }
+  if (dayDiff === 1) {
+    return `昨天 ${time}`;
+  }
+  if (beijing.year === today.year) {
+    return `${beijing.month}月${beijing.day}日 ${time}`;
+  }
+  return `${beijing.year}-${`${beijing.month}`.padStart(2, "0")}-${`${beijing.day}`.padStart(2, "0")} ${time}`;
 }
 
 function formatBeijingDateTime(value) {
@@ -269,7 +315,12 @@ function normalizeMessage(message = {}) {
   const senderId = sender.id || message.senderId || message.sender_id || "";
   const senderName = sender.displayName || sender.nickname || message.sender || "系统";
   const currentUserId = app.globalData.userProfile && app.globalData.userProfile.id;
-  const createdAt = parseApiDate(message.createdAt) || new Date();
+  const senderType = message.senderType || message.sender_type || "user";
+  const rawCreatedAt = message.createdAt || message.created_at || "";
+  const parsedCreatedAt = parseApiDate(rawCreatedAt);
+  const createdAt = parsedCreatedAt && !isNaN(parsedCreatedAt.getTime()) ? parsedCreatedAt : new Date();
+  const type = isDeleted ? "text" : (message.kind || message.type || "text");
+  const mediaUrl = message.mediaUrl || message.media_url || "";
   const flashExpiresAt = message.flashExpiresAt || message.flash_expires_at || "";
   const flashExpiresDate = parseApiDate(flashExpiresAt);
   const computedFlashSeconds = flashExpiresDate && createdAt
@@ -281,16 +332,17 @@ function normalizeMessage(message = {}) {
 
   return {
     id: message.id,
-    type: isDeleted ? "text" : (message.kind || message.type || "text"),
+    type,
     senderId,
-    senderType: message.senderType || message.sender_type || "user",
+    senderType,
     sender: senderName,
     avatar: normalizeAvatarUrl(sender.avatarUrl || message.avatar || ""),
     avatarText: avatarInitial(senderName),
-    time: message.time || formatBeijingTime(createdAt),
-    text: isDeleted ? "该消息已被管理员删除" : message.text,
-    image: isDeleted ? "" : (message.mediaUrl || message.image),
-    video: isDeleted ? "" : (message.mediaUrl || message.video || ""),
+    createdAt: rawCreatedAt,
+    time: rawCreatedAt ? formatBeijingChatTime(createdAt) : (message.time || formatBeijingChatTime(createdAt) || formatBeijingTime(createdAt)),
+    text: isDeleted ? "该消息已被管理员删除" : (message.text || ""),
+    image: isDeleted ? "" : (type === "emoji" ? (mediaUrl || message.image || "") : (mediaUrl || message.image || "")),
+    video: isDeleted ? "" : (mediaUrl || message.video || ""),
     duration: message.duration || (message.durationSeconds ? `${message.durationSeconds}''` : "06''"),
     durationSeconds: message.durationSeconds || message.duration_seconds || 6,
     voicePath: message.voicePath || message.mediaUrl || "",
@@ -313,7 +365,7 @@ function normalizeMessage(message = {}) {
     isDeleted,
     deletedAt: message.deletedAt || message.deleted_at || "",
     deleteReason: message.deleteReason || message.delete_reason || "",
-    isMine: !!(message.isMine || (currentUserId && senderId && currentUserId === senderId))
+    isMine: !!(senderType === "user" && (message.isMine || (currentUserId && senderId && currentUserId === senderId)))
   };
 }
 
@@ -405,7 +457,17 @@ function normalizeRoom(payload = {}) {
       openSeats,
       entryCode: table.shareScene || room.room?.entryCode || ""
     },
-    members: sortMembers((room.members || []).map(normalizeMember)),
+    members: sortMembers((room.members || []).map((member) => {
+      const normalized = normalizeMember(member);
+      const isHead = normalized.isHead || (
+        normalized.memberId && table.headMemberId && normalized.memberId === table.headMemberId
+      );
+      return {
+        ...normalized,
+        role: isHead ? "局头" : normalized.role,
+        isHead
+      };
+    })),
     messages: (room.messages || []).map(normalizeMessage).filter((message) => !message.flashExpired)
   };
 }
@@ -489,10 +551,10 @@ async function getRoomByEntry(entry) {
     return normalizeRoom(roomRes);
   }
 
-  const scene = entry.scene || entry.inviteCode || "party_demo";
-  const sceneRes = await request("/api/party/by-scene", {
-    data: { scene }
-  });
+  const scene = entry.scene || entry.inviteCode || "";
+  const sceneRes = scene
+    ? await request("/api/party/by-scene", { data: { scene } })
+    : await request("/api/party/current");
   const partyId = sceneRes.party.id;
   const tableId = entry.tableId || sceneRes.defaultTableId;
   const roomRes = await request("/api/room", {
@@ -561,25 +623,30 @@ function downloadTableQrcode(tableId, adminId = "admin_mimei", adminKey = "") {
   if (cached) {
     return Promise.resolve(cached);
   }
+  if (_QRCODE_PENDING[cacheKey]) {
+    return _QRCODE_PENDING[cacheKey];
+  }
   const url = buildUrl("/api/admin/tables/qrcode", {
     tableId,
     adminId
   });
-  return new Promise((resolve, reject) => {
+  _QRCODE_PENDING[cacheKey] = new Promise((resolve, reject) => {
     wx.downloadFile({
       url,
       header: adminHeader(adminKey),
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300 && res.tempFilePath) {
-          _saveQrcodeToCache(cacheKey, res.tempFilePath);
-          resolve(res.tempFilePath);
+          resolve(_saveQrcodeToCache(cacheKey, res.tempFilePath) || res.tempFilePath);
           return;
         }
         reject(new Error(`Qrcode download failed: ${res.statusCode}`));
       },
       fail: reject
     });
+  }).finally(() => {
+    delete _QRCODE_PENDING[cacheKey];
   });
+  return _QRCODE_PENDING[cacheKey];
 }
 
 function downloadRoomQrcode(scene) {
@@ -592,21 +659,26 @@ function downloadRoomQrcode(scene) {
   if (cached) {
     return Promise.resolve(cached);
   }
+  if (_QRCODE_PENDING[cacheKey]) {
+    return _QRCODE_PENDING[cacheKey];
+  }
   const url = buildUrl("/api/party/qrcode", { scene });
-  return new Promise((resolve, reject) => {
+  _QRCODE_PENDING[cacheKey] = new Promise((resolve, reject) => {
     wx.downloadFile({
       url,
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300 && res.tempFilePath) {
-          _saveQrcodeToCache(cacheKey, res.tempFilePath);
-          resolve(res.tempFilePath);
+          resolve(_saveQrcodeToCache(cacheKey, res.tempFilePath) || res.tempFilePath);
           return;
         }
         reject(new Error(`Qrcode download failed: ${res.statusCode}`));
       },
       fail: reject
     });
+  }).finally(() => {
+    delete _QRCODE_PENDING[cacheKey];
   });
+  return _QRCODE_PENDING[cacheKey];
 }
 
 // Local file-system cache for QR code images.
@@ -614,6 +686,7 @@ function downloadRoomQrcode(scene) {
 // so persisting them avoids repeated downloads from the backend.
 const _QRCODE_CACHE_PREFIX = "partyQrcodeCache_";
 const _QRCODE_CACHE_MAX_AGE_MS = 86400_000; // 24 hours
+const _QRCODE_PENDING = {};
 
 function _getCachedQrcode(key) {
   try {
@@ -641,7 +714,7 @@ function _getCachedQrcode(key) {
 
 function _saveQrcodeToCache(key, tempPath) {
   if (!tempPath || !wx.getFileSystemManager) {
-    return;
+    return "";
   }
   try {
     const fs = wx.getFileSystemManager();
@@ -650,8 +723,10 @@ function _saveQrcodeToCache(key, tempPath) {
       path: saved,
       savedAt: Date.now()
     });
+    return saved;
   } catch (_e) {
     // If we can't persist, the download still succeeded — just won't be cached.
+    return "";
   }
 }
 
@@ -735,6 +810,7 @@ function createAdminParty(form) {
     }
   }).then((res) => ({
     party: res.party,
+    table: res.table ? normalizeAdminTable(res.table, res.party) : null,
     tables: (res.tables || []).map((table) => normalizeAdminTable(table, res.party))
   }));
 }
@@ -938,6 +1014,19 @@ async function sendRoomMessage(roomId, tableId, message, options = {}) {
   }).then((res) => normalizeMessage(res.message));
 }
 
+function getRoomMessages(roomId, tableId, afterId = "") {
+  if (!app.globalData.apiBaseUrl) {
+    return Promise.resolve([]);
+  }
+  return request("/api/messages", {
+    data: {
+      partyId: roomId,
+      tableId,
+      afterId
+    }
+  }).then((res) => (res.messages || []).map(normalizeMessage).filter((message) => !message.flashExpired));
+}
+
 function likeMessage(roomId, messageId) {
   if (!app.globalData.apiBaseUrl) {
     return Promise.resolve({ roomId, messageId, ok: true });
@@ -978,6 +1067,10 @@ function connectRoomSocket(room, handlers = {}) {
     }
     if (payload.type === "member.updated" && payload.member) {
       payload.member = normalizeMember(payload.member);
+    }
+    if ((payload.type === "room.updated" || payload.type === "member.removed") && (payload.party || payload.table || payload.members)) {
+      payload.room = normalizeRoom(payload);
+      payload.members = payload.room.members;
     }
     if (handlers.onMessage) {
       handlers.onMessage(payload);
@@ -1180,6 +1273,7 @@ module.exports = {
   submitReport,
   saveMessageSubscription,
   sendRoomMessage,
+  getRoomMessages,
   uploadMedia,
   likeMessage,
   connectRoomSocket,

@@ -3,6 +3,7 @@ const path = require("path");
 const ci = require("miniprogram-ci");
 const pkg = require("../package.json");
 const projectConfig = require("../project.config.json");
+const { buildUploadProject } = require("./build_miniprogram_upload");
 
 const rootDir = path.resolve(__dirname, "..");
 const mode = process.argv[2] || "preview";
@@ -18,6 +19,7 @@ const qrcodeOutputDest = path.resolve(
   rootDir,
   process.env.WECHAT_PREVIEW_QRCODE || ".weapp/preview.jpg"
 );
+const slimBuild = process.env.WECHAT_SLIM_BUILD !== "0";
 
 const projectIgnores = [
   "node_modules/**/*",
@@ -44,13 +46,13 @@ function ensureReady() {
   fs.mkdirSync(path.dirname(qrcodeOutputDest), { recursive: true });
 }
 
-function buildProject() {
+function buildProject(projectPath) {
   return new ci.Project({
     appid,
     type: "miniProgram",
-    projectPath: rootDir,
+    projectPath,
     privateKeyPath,
-    ignores: projectIgnores
+    ignores: slimBuild ? [] : projectIgnores
   });
 }
 
@@ -119,8 +121,15 @@ async function main() {
     throw new Error("Usage: node scripts/miniprogram_ci.js <preview|upload>");
   }
   ensureReady();
-  const project = buildProject();
-  await packNpm(project);
+  const uploadSource = slimBuild ? buildUploadProject() : { outputDir: rootDir, size: 0 };
+  if (slimBuild) {
+    console.log(`Slim upload project: ${uploadSource.outputDir}`);
+    console.log(`Slim upload source size: ${uploadSource.size} bytes`);
+  }
+  const project = buildProject(uploadSource.outputDir);
+  if (!slimBuild) {
+    await packNpm(project);
+  }
   if (mode === "preview") {
     await runPreview(project);
     return;

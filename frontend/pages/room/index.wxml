@@ -98,10 +98,16 @@
               <view wx:else class="member-avatar avatar-fallback avatar-pixel avatar-{{item.generatedAvatar.type}}">
                 <view wx:for="{{item.generatedAvatar.cells}}" wx:key="key" class="avatar-cell" style="left: {{item.x * item.generatedAvatar.step}}%; top: {{item.y * item.generatedAvatar.step}}%; width: {{item.generatedAvatar.step}}%; height: {{item.generatedAvatar.step}}%; background: {{item.color}};"></view>
               </view>
+              <view wx:if="{{item.isHead || item.role === '局头'}}" class="head-badge">
+                <t-icon name="flag" size="18rpx" />
+              </view>
               <view class="online-dot {{item.online ? 'online' : ''}}"></view>
             </view>
             <text class="member-name">{{item.name}}</text>
             <view class="member-status-icons">
+              <view wx:if="{{item.isHead || item.role === '局头'}}" class="status-icon head">
+                <t-icon name="flag" size="18rpx" />
+              </view>
               <view class="status-icon gender {{item.gender}}">
                 <t-icon name="{{item.gender === 'male' ? 'gender-male' : item.gender === 'female' ? 'gender-female' : 'user-unknown'}}" size="20rpx" color="{{item.gender === 'male' ? '#2f80ff' : item.gender === 'female' ? '#ec5f9d' : '#9aa4b2'}}" />
               </view>
@@ -170,7 +176,7 @@
                   <text class="flash-expired-copy">已销毁</text>
                   <text class="flash-expired-sub">闪照</text>
                 </view>
-                <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="aspectFill" data-id="{{item.id}}" bindtap="previewMedia"></image>
+                <image wx:elif="{{item.image}}" class="photo-shot" src="{{item.image}}" mode="widthFix" data-id="{{item.id}}" bindtap="previewMedia"></image>
                 <view wx:else class="photo-placeholder">
                   <view class="flash-expired-icon"><t-icon name="image" size="42rpx" /></view>
                   <text class="flash-expired-copy">暂不可见</text>
@@ -182,11 +188,25 @@
 
               <view wx:elif="{{item.type === 'emoji'}}" class="emoji-message" data-id="{{item.id}}" bindtap="previewMedia">
                 <image wx:if="{{item.image}}" class="emoji-shot" src="{{item.image}}" mode="aspectFit"></image>
+                <text wx:elif="{{item.text}}" class="emoji-text">{{item.text}}</text>
                 <view wx:else class="emoji-placeholder">表情暂不可见</view>
               </view>
 
               <view wx:elif="{{item.type === 'video'}}" class="photo-message video-message" data-id="{{item.id}}" bindtap="previewMedia">
-                <video class="video-shot" src="{{item.video}}" controls show-fullscreen-btn show-play-btn object-fit="cover"></video>
+                <video
+                  wx:if="{{item.video}}"
+                  class="video-shot"
+                  src="{{item.video}}"
+                  object-fit="contain"
+                  controls="{{true}}"
+                  show-center-play-btn="{{true}}"
+                  enable-progress-gesture="{{true}}"
+                ></video>
+                <view wx:else class="video-shot">
+                  <view class="video-play">
+                    <t-icon name="play-circle" size="70rpx" />
+                  </view>
+                </view>
               </view>
 
               <view wx:else class="bubble text-bubble">
@@ -240,9 +260,25 @@
           <view class="composer-tool voice-mode-tool {{voiceInputMode ? 'active' : ''}}" bindtap="toggleVoiceInputMode" aria-label="{{voiceInputMode ? '切换键盘输入' : '切换语音输入'}}">
           <t-icon name="microphone" size="34rpx" />
         </view>
-        <input wx:if="{{!voiceInputMode}}" class="chat-input" value="{{inputText}}" bindinput="onInput" placeholder="说点今晚的安排" placeholder-class="input-placeholder" confirm-type="send" bindconfirm="onSendText" />
+        <input
+          wx:if="{{!voiceInputMode}}"
+          class="chat-input"
+          value="{{inputText}}"
+          bindinput="onInput"
+          bindfocus="onInputFocus"
+          placeholder="说点今晚的安排"
+          placeholder-class="input-placeholder"
+          confirm-type="send"
+          confirm-hold="{{true}}"
+          cursor-spacing="24"
+          maxlength="500"
+          bindconfirm="onSendText"
+        />
         <view wx:else class="voice-hold-button {{voiceRecording ? 'recording' : ''}}" bindtouchstart="onVoiceTouchStart" bindtouchend="onVoiceTouchEnd" bindtouchcancel="cancelVoiceRecord">
           {{voiceRecording ? '松开发送' : '按住说话'}}
+        </view>
+        <view class="composer-tool emoji-tool {{emojiPanelOpen ? 'active' : ''}}" bindtap="toggleEmojiPanel" aria-label="表情">
+          <text>☺</text>
         </view>
         <view wx:if="{{inputText}}" class="composer-tool send-button" bindtap="onSendText" aria-label="发送消息">
           <text wx:if="{{sending}}">...</text>
@@ -250,6 +286,39 @@
         </view>
         <view wx:else class="composer-tool plus-tool {{plusPanelOpen ? 'active' : ''}}" bindtap="togglePlusPanel" aria-label="更多发送选项">
           <t-icon name="add" size="34rpx" />
+        </view>
+      </view>
+      <view class="emoji-panel" wx:if="{{emojiPanelOpen}}">
+        <scroll-view class="emoji-tabs" scroll-x enhanced show-scrollbar="{{false}}">
+          <view
+            class="emoji-tab {{activeEmojiGroupKey === item.key ? 'active' : ''}}"
+            wx:for="{{emojiGroups}}"
+            wx:key="key"
+            data-key="{{item.key}}"
+            bindtap="onEmojiGroupTap"
+          >
+            <text>{{item.icon}}</text>
+          </view>
+        </scroll-view>
+        <swiper class="emoji-swiper" current="{{emojiPageIndex}}" duration="180" bindchange="onEmojiSwiperChange">
+          <swiper-item wx:for="{{emojiPages}}" wx:key="id" wx:for-item="page">
+            <view class="emoji-grid">
+              <view
+                class="emoji-cell"
+                wx:for="{{page.items}}"
+                wx:key="id"
+                wx:for-item="emoji"
+                data-id="{{emoji.id}}"
+                data-value="{{emoji.value}}"
+                bindtap="onSendEmoji"
+              >
+                <text>{{emoji.value}}</text>
+              </view>
+            </view>
+          </swiper-item>
+        </swiper>
+        <view class="emoji-dots" wx:if="{{emojiPages.length > 1}}">
+          <view class="emoji-dot {{emojiPageIndex === index ? 'active' : ''}}" wx:for="{{emojiPages}}" wx:key="id"></view>
         </view>
       </view>
       <view class="plus-panel" wx:if="{{plusPanelOpen}}">
@@ -299,7 +368,7 @@
             <text class="notify-title">通知栏消息</text>
             <text class="notify-copy">{{notifyEnabled ? '已开启，新消息会进入微信通知栏' : '离开小程序后接收同桌新消息'}}</text>
           </view>
-          <t-button t-class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bind:click="requestMessageSubscription">
+          <t-button t-class="notify-button {{notifyEnabled ? 'enabled' : ''}}" bindtap="requestMessageSubscription">
             {{notifySaving ? '保存中' : notifyEnabled ? '已开启' : '开启'}}
           </t-button>
         </view>
@@ -313,7 +382,12 @@
             <text>，并确认本人已满 18 周岁</text>
           </view>
         </view>
-        <t-button t-class="profile-submit" bind:click="onSaveProfile" disabled="{{profileSaving}}" loading="{{profileSaving}}">{{profileReady ? '保存资料' : '进入主局'}}</t-button>
+        <t-button
+          t-class="profile-submit"
+          bindtap="onSaveProfile"
+          disabled="{{profileSaving || !profileForm.avatarUrl || !profileForm.nickName || (!profileReady && (!profileForm.agreementAccepted || !profileForm.ageConfirmed))}}"
+          loading="{{profileSaving}}"
+        >{{profileReady ? '保存资料' : '进入主局'}}</t-button>
       </view>
     </view>
 

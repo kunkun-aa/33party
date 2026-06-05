@@ -375,6 +375,11 @@ Page({
       },
       onError: (error) => {
         console.warn('管理页实时连接异常', error)
+        this.refreshAdminSession().finally(() => {
+          if (!this.pageUnloaded && !this.pageHidden) {
+            this.scheduleAdminRealtimeReconnect()
+          }
+        })
       }
     })
   },
@@ -578,12 +583,13 @@ Page({
   // Check if an error is an admin auth failure and try to refresh the session.
   isAdminAuthError(error) {
     const message = error && error.message || ''
-    return /管理员密钥|管理员登录|密钥无效|token|401|权限/.test(message)
+    return /管理员密钥|管理员登录|密钥无效|已过期|失效|token|401|403|权限|无管理员权限/.test(message)
   },
 
   // Wrap an admin API call with automatic session refresh on auth failure.
   withAdminAuth(action) {
-    return Promise.resolve(action()).catch((error) => {
+    const run = () => Promise.resolve(action())
+    return run().catch((error) => {
       if (!this.isAdminAuthError(error)) {
         throw error
       }
@@ -592,7 +598,7 @@ Page({
         if (!refreshed) {
           throw error
         }
-        return action()
+        return run()
       })
     })
   },
@@ -670,12 +676,12 @@ Page({
     }
     this.setDataIfAlive({ wechatSaving: true })
     try {
-      const res = await api.updateAdminProfile({
-        adminId: this.data.adminId,
-        adminKey: this.data.adminKey,
-        displayName: this.data.adminProfile.name,
-        wechatId
-      })
+      const res = await this.withAdminAuth(() => api.updateAdminProfile({
+          adminId: this.data.adminId,
+          adminKey: this.data.adminKey,
+          displayName: this.data.adminProfile.name,
+          wechatId
+        }))
       if (this.pageUnloaded) {
         return
       }
@@ -814,13 +820,13 @@ Page({
     }
     this.setDataIfAlive({ savingParty: true })
     try {
-      const res = await api.updateAdminParty({
-        ...form,
-        partyId,
-        tableId: table.id,
-        adminId: this.data.adminId,
-        adminKey: this.data.adminKey
-      })
+      const res = await this.withAdminAuth(() => api.updateAdminParty({
+          ...form,
+          partyId,
+          tableId: table.id,
+          adminId: this.data.adminId,
+          adminKey: this.data.adminKey
+        }))
       if (this.pageUnloaded) {
         return
       }
@@ -872,37 +878,46 @@ Page({
     }
     this.setDataIfAlive({ creatingParty: true })
     try {
-      const res = await api.createAdminParty({
-        ...form,
-        adminId: this.data.adminId,
-        adminKey: this.data.adminKey
-      })
+      const previousSelectedId = this.data.selectedId
+      const res = await this.withAdminAuth(() => api.createAdminParty({
+          ...form,
+          adminId: this.data.adminId,
+          adminKey: this.data.adminKey
+        }))
       if (this.pageUnloaded) {
         return
       }
-      const tables = (res.tables || []).map(decorateTableAvatars)
+      const returnedTables = (res.tables && res.tables.length ? res.tables : [res.table]).filter(Boolean).map(decorateTableAvatars)
+      const tableMap = new Map(this.data.tables.map((table) => [table.id, table]))
+      returnedTables.forEach((table) => tableMap.set(table.id, table))
+      const tables = Array.from(tableMap.values())
+      const selectedId = previousSelectedId && tables.some((table) => table.id === previousSelectedId)
+        ? previousSelectedId
+        : (res.table && res.table.id || tables[0] && tables[0].id || '')
+      const selectedTable = tables.find((table) => table.id === selectedId) || null
       this.setDataIfAlive({
-        partyId: res.party ? res.party.id : this.data.partyId,
-        currentParty: res.party || null,
+        partyId: this.data.partyId || (res.party ? res.party.id : ''),
+        currentParty: this.data.currentParty || res.party || null,
         tables,
         filter: 'all',
-        selectedId: tables[0] ? tables[0].id : '',
-        selectedTable: tables[0] || null,
-        editForm: this.buildEditForm(tables[0] || null, res.party || null),
+        selectedId,
+        selectedTable,
+        editForm: this.buildEditForm(selectedTable, this.data.currentParty || res.party || null),
         selectedEndedPartyIds: []
       })
       this.recalculate(tables)
       this.setTransientCopy('party_created')
-      this.loadDashboard()
+      this.loadDashboard({ silent: true, preserveSelection: true })
     } catch (error) {
-      this.showToastIfAlive({ title: '创建失败', icon: 'none' })
+      this.showToastIfAlive({ title: error.message || '创建失败', icon: 'none' })
     } finally {
       this.setDataIfAlive({ creatingParty: false })
     }
   },
 
   endCurrentParty() {
-    const partyId = this.data.currentParty && this.data.currentParty.id || this.data.partyId
+    const selectedTable = this.data.selectedTable || null
+    const partyId = selectedTable && selectedTable.partyId || this.data.currentParty && this.data.currentParty.id || this.data.partyId
     if (!partyId || this.data.endingParty) {
       return
     }
@@ -917,25 +932,34 @@ Page({
         }
         this.setDataIfAlive({ endingParty: true })
         try {
-          const result = await api.endAdminParty(partyId, this.data.adminId, this.data.adminKey)
+          const result = await this.withAdminAuth(() => api.endAdminParty(partyId, this.data.adminId, this.data.adminKey))
           if (this.pageUnloaded) {
             return
           }
-          const tables = result.tables && result.tables.length ? result.tables : this.data.tables.map((table) => ({
+          const updatedTables = (result.tables && result.tables.length ? result.tables : this.data.tables.filter((table) => (table.partyId || this.data.partyId) === partyId).map((table) => ({
             ...table,
             status: 'ended',
             statusText: '已结束'
-          }))
+          }))).map(decorateTableAvatars)
+          const tableMap = new Map(this.data.tables.map((table) => [table.id, table]))
+          updatedTables.forEach((table) => tableMap.set(table.id, table))
+          const tables = Array.from(tableMap.values()).map(decorateTableAvatars)
+          const nextSelected = tables.find((table) => table.status !== 'ended') || tables.find((table) => table.id === this.data.selectedId) || tables[0] || null
+          const nextPartyId = nextSelected && nextSelected.status !== 'ended' ? nextSelected.partyId || partyId : partyId
           this.setDataIfAlive({
             tables,
+            partyId: nextPartyId,
             currentParty: result.party || {
               ...this.data.currentParty,
               id: partyId,
               status: 'ended'
-            }
+            },
+            selectedId: nextSelected ? nextSelected.id : '',
+            selectedTable: nextSelected,
+            editForm: this.buildEditForm(nextSelected, result.party || this.data.currentParty || null)
           })
-          this.updateSelected(this.data.selectedId)
           this.recalculate(tables)
+          this.loadDashboard({ silent: true, preserveSelection: true })
           this.showToastIfAlive({ title: '已解散', icon: 'success' })
         } catch (error) {
           this.showToastIfAlive({ title: error.message || '解散失败', icon: 'none' })
@@ -978,20 +1002,25 @@ Page({
         }
         this.setDataIfAlive({ deletingParties: true })
         try {
-          await api.deleteEndedParties(partyIds, this.data.adminId, this.data.adminKey)
+          await this.withAdminAuth(() => api.deleteEndedParties(partyIds, this.data.adminId, this.data.adminKey))
           if (this.pageUnloaded) {
             return
           }
           const deleted = new Set(partyIds)
           const tables = this.data.tables.filter((table) => !deleted.has(table.partyId || this.data.partyId))
+          const deletedCurrentParty = deleted.has(this.data.partyId)
+          const nextSelected = tables.find((table) => table.status !== 'ended') || tables[0] || null
           this.setDataIfAlive({
             tables,
+            partyId: deletedCurrentParty ? nextSelected && nextSelected.partyId || '' : this.data.partyId,
+            currentParty: deletedCurrentParty ? null : this.data.currentParty,
             selectedEndedPartyIds: [],
-            selectedId: tables[0] ? tables[0].id : '',
-            selectedTable: tables[0] || null,
-            editForm: this.buildEditForm(tables[0] || null)
+            selectedId: nextSelected ? nextSelected.id : '',
+            selectedTable: nextSelected,
+            editForm: this.buildEditForm(nextSelected, deletedCurrentParty ? null : this.data.currentParty)
           })
           this.recalculate(tables)
+          this.loadDashboard({ silent: true, preserveSelection: true })
           this.showToastIfAlive({ title: '已删除', icon: 'success' })
         } catch (error) {
           this.showToastIfAlive({ title: error.message || '删除失败', icon: 'none' })
@@ -1061,7 +1090,7 @@ Page({
     if (!table) {
       return
     }
-    return this.runLockedAction(`copy_join_${table.id}`, () => api.getTableInvite(table.id, this.data.adminId, this.data.adminKey).then((invite) => {
+    return this.runLockedAction(`copy_join_${table.id}`, () => this.withAdminAuth(() => api.getTableInvite(table.id, this.data.adminId, this.data.adminKey)).then((invite) => {
       if (this.pageUnloaded) {
         return
       }
@@ -1169,7 +1198,7 @@ Page({
     }
     return this.runLockedAction(`seat_${memberId}`, async () => {
       try {
-        const result = await api.setMemberSeat(memberId, 'seated', this.data.adminKey)
+        const result = await this.withAdminAuth(() => api.setMemberSeat(memberId, 'seated', this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1192,7 +1221,7 @@ Page({
     }
     return this.runLockedAction(`head_${table.id}_${memberId}`, async () => {
       try {
-        await api.setTableHead(table.id, memberId, this.data.adminKey)
+        await this.withAdminAuth(() => api.setTableHead(table.id, memberId, this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1211,7 +1240,7 @@ Page({
     }
     return this.runLockedAction(`head_clear_${table.id}`, async () => {
       try {
-        await api.setTableHead(table.id, '', this.data.adminKey)
+        await this.withAdminAuth(() => api.setTableHead(table.id, '', this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1239,7 +1268,7 @@ Page({
         }
         this.runLockedAction(`kick_${memberId}`, async () => {
           try {
-            await api.kickMember(memberId, this.data.adminKey)
+            await this.withAdminAuth(() => api.kickMember(memberId, this.data.adminKey))
             if (this.pageUnloaded) {
               return
             }
@@ -1272,7 +1301,7 @@ Page({
       this.setData({ reportLoading: true })
     }
     try {
-      const reports = await api.getAdminReports(this.data.partyId, status, this.data.adminId, this.data.adminKey)
+      const reports = await this.withAdminAuth(() => api.getAdminReports(this.data.partyId, status, this.data.adminId, this.data.adminKey))
       if (this.pageUnloaded) {
         return
       }
@@ -1296,7 +1325,7 @@ Page({
     }
     return this.runLockedAction(`delete_message_${messageId}`, async () => {
       try {
-        await api.deleteMessage(messageId, '违规内容', this.data.adminId, this.data.adminKey)
+        await this.withAdminAuth(() => api.deleteMessage(messageId, '违规内容', this.data.adminId, this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1315,7 +1344,7 @@ Page({
     }
     return this.runLockedAction(`report_${reportId}_${status}`, async () => {
       try {
-        await api.resolveReport(reportId, status, this.data.adminId, this.data.adminKey)
+        await this.withAdminAuth(() => api.resolveReport(reportId, status, this.data.adminId, this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1357,7 +1386,7 @@ Page({
         }
         this.runLockedAction(`ban_${userId}`, async () => {
           try {
-            await api.banUser(userId, '违规使用', this.data.partyId, this.data.adminId, this.data.adminKey)
+            await this.withAdminAuth(() => api.banUser(userId, '违规使用', this.data.partyId, this.data.adminId, this.data.adminKey))
             if (this.pageUnloaded) {
               return
             }
@@ -1378,7 +1407,7 @@ Page({
     }
     return this.runLockedAction(`unban_${userId}`, async () => {
       try {
-        await api.unbanUser(userId, this.data.partyId, this.data.adminId, this.data.adminKey)
+        await this.withAdminAuth(() => api.unbanUser(userId, this.data.partyId, this.data.adminId, this.data.adminKey))
         if (this.pageUnloaded) {
           return
         }
@@ -1408,25 +1437,37 @@ Page({
           error: ''
         }
       })
-      // Fetch invite info and QR code in parallel to avoid sequential delays.
-      return Promise.all([
-        api.getTableInvite(table.id, this.data.adminId, this.data.adminKey),
-        api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey).catch((error) => {
-          console.warn('小程序码下载失败', error)
-          return ''
+      const invitePromise = this.withAdminAuth(() => api.getTableInvite(table.id, this.data.adminId, this.data.adminKey))
+      const qrcodePromise = this.withAdminAuth(() => api.downloadTableQrcode(table.id, this.data.adminId, this.data.adminKey))
+      qrcodePromise.then((qrcodePath) => {
+        if (this.pageUnloaded) {
+          return
+        }
+        this.setData({
+          'inviteInfo.qrcodePath': qrcodePath || this.data.inviteInfo.qrcodePath,
+          'inviteInfo.error': qrcodePath ? '' : this.data.inviteInfo.error
         })
-      ]).then(([invite, qrcodePath]) => {
-        const link = invite.urlLink || ''
+      }).catch((error) => {
+        console.warn('小程序码下载失败', error)
+        if (!this.pageUnloaded) {
+          this.setData({ 'inviteInfo.error': '小程序码生成失败，请稍后重试' })
+        }
+      }).finally(() => {
+        if (!this.pageUnloaded) {
+          this.setData({ inviteLoading: false })
+        }
+      })
+      return invitePromise.then((invite) => {
         if (this.pageUnloaded) {
           return
         }
         this.setData({
           inviteInfo: {
+            ...this.data.inviteInfo,
             tableNo: table.tableNo,
-            scene: invite.scene,
-            link,
-            qrcodePath,
-            error: qrcodePath || link ? '' : '小程序码和链接暂未生成，请检查微信密钥和发布状态'
+            scene: invite.scene || this.data.inviteInfo.scene,
+            link: invite.urlLink || this.data.inviteInfo.link,
+            error: this.data.inviteInfo.qrcodePath ? '' : this.data.inviteInfo.error
           }
         })
       }).catch((error) => {
@@ -1444,10 +1485,6 @@ Page({
               : '入局信息加载失败，请稍后重试'
           }
         })
-      }).finally(() => {
-        if (!this.pageUnloaded) {
-          this.setData({ inviteLoading: false })
-        }
       })
     })
   },
@@ -1482,7 +1519,9 @@ Page({
         this.lightFeedback()
         this.showToastIfAlive({ title: '小程序码已保存', icon: 'success' })
       },
-      fail: () => this.showToastIfAlive({ title: '保存失败，请检查相册权限', icon: 'none' })
+      fail: () => {
+        this.showToastIfAlive({ title: '保存失败，请检查相册权限', icon: 'none' })
+      }
     })
   },
 
@@ -1532,7 +1571,7 @@ Page({
     })
     // Pre-fetch the QR code in the background so showJoinInfo is instant.
     if (decorated && decorated.status !== 'ended') {
-      api.downloadTableQrcode(decorated.id, this.data.adminId, this.data.adminKey).catch(() => {})
+      this.withAdminAuth(() => api.downloadTableQrcode(decorated.id, this.data.adminId, this.data.adminKey)).catch(() => {})
     }
   },
 

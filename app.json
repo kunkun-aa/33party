@@ -15,6 +15,9 @@
       "desc": "用于创建局和打开现场导航"
     }
   },
+  "requiredPrivateInfos": [
+    "chooseLocation"
+  ],
   "style": "v2",
   "sitemapLocation": "sitemap.json"
 }

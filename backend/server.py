@@ -30,8 +30,8 @@ ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "")
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", ROOT / "uploads"))
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(80 * 1024 * 1024)))
-MESSAGE_RETENTION_HOURS = int(os.environ.get("MESSAGE_RETENTION_HOURS", "2"))
-UPLOAD_RETENTION_HOURS = int(os.environ.get("UPLOAD_RETENTION_HOURS", str(MESSAGE_RETENTION_HOURS)))
+MESSAGE_RETENTION_HOURS = float(os.environ.get("MESSAGE_RETENTION_HOURS", "1"))
+UPLOAD_RETENTION_HOURS = float(os.environ.get("UPLOAD_RETENTION_HOURS", str(MESSAGE_RETENTION_HOURS)))
 CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CLEANUP_INTERVAL_SECONDS", "900"))
 MINIPROGRAM_APPID = os.environ.get("WECHAT_MINIPROGRAM_APPID", "")
 MINIPROGRAM_SECRET = os.environ.get("WECHAT_MINIPROGRAM_SECRET", "")
@@ -50,7 +50,7 @@ REQUIRE_ADMIN_AUTH = os.environ.get("REQUIRE_ADMIN_AUTH", "1" if APP_ENV == "pro
 MINIPROGRAM_ROOM_PAGE = "frontend/pages/room/index"
 MINIPROGRAM_ADMIN_PAGE = "frontend/pages/admin/index"
 TOKEN_CACHE = {"access_token": "", "expires_at": 0}
-ONLINE_WINDOW_SECONDS = int(os.environ.get("ONLINE_WINDOW_SECONDS", "300"))
+ONLINE_GRACE_SECONDS = int(os.environ.get("ONLINE_GRACE_SECONDS", "90"))
 CLEANUP_STATE = {"last_run": 0}
 CLEANUP_LOCK = threading.Lock()
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -116,24 +116,88 @@ class RoomWebSocketHub:
     def __init__(self):
         self.lock = threading.Lock()
         self.clients_by_room: dict[str, set[WebSocketClient]] = {}
+        self.presence_by_room: dict[str, dict[str, dict[str, float | int]]] = {}
 
-    def add(self, client: WebSocketClient) -> None:
+    def add(self, client: WebSocketClient) -> list[dict]:
+        events: list[dict] = []
         with self.lock:
             self.clients_by_room.setdefault(client.channel_key, set()).add(client)
+            if client.user_id and client.table_id != "__admin__":
+                room_presence = self.presence_by_room.setdefault(client.channel_key, {})
+                state = room_presence.setdefault(client.user_id, {"count": 0, "grace_until": 0})
+                was_online = int(state.get("count") or 0) > 0 or float(state.get("grace_until") or 0) > time.time()
+                state["count"] = int(state.get("count") or 0) + 1
+                state["grace_until"] = 0
+                if not was_online:
+                    events.append(self.presence_event(client, True))
+        return events
 
     def remove(self, client: WebSocketClient) -> None:
+        schedule_offline = False
         with self.lock:
             clients = self.clients_by_room.get(client.channel_key)
-            if not clients:
-                return
-            clients.discard(client)
-            if not clients:
-                self.clients_by_room.pop(client.channel_key, None)
+            if clients:
+                clients.discard(client)
+                if not clients:
+                    self.clients_by_room.pop(client.channel_key, None)
+            if client.user_id and client.table_id != "__admin__":
+                room_presence = self.presence_by_room.setdefault(client.channel_key, {})
+                state = room_presence.setdefault(client.user_id, {"count": 0, "grace_until": 0})
+                state["count"] = max(int(state.get("count") or 0) - 1, 0)
+                if state["count"] == 0:
+                    state["grace_until"] = time.time() + ONLINE_GRACE_SECONDS
+                    schedule_offline = True
+        if schedule_offline:
+            timer = threading.Timer(ONLINE_GRACE_SECONDS, self.broadcast_offline_if_still_absent, args=(client,))
+            timer.daemon = True
+            timer.start()
 
-    def broadcast(self, channel_key: str, payload: dict) -> None:
+    def presence_event(self, client: WebSocketClient, online: bool) -> dict:
+        return {
+            "type": "member.presence.updated",
+            "partyId": client.party_id,
+            "tableId": client.table_id,
+            "userId": client.user_id,
+            "online": online,
+        }
+
+    def broadcast_presence(self, client: WebSocketClient, online: bool) -> None:
+        self.broadcast(client.channel_key, self.presence_event(client, online))
+        self.broadcast(admin_channel_key(client.party_id), {
+            "type": "dashboard.changed",
+            "reason": "member.presence.updated",
+            "partyId": client.party_id,
+            "tableId": client.table_id,
+        })
+
+    def broadcast_offline_if_still_absent(self, client: WebSocketClient) -> None:
+        with self.lock:
+            state = self.presence_by_room.get(client.channel_key, {}).get(client.user_id)
+            if not state:
+                return
+            if int(state.get("count") or 0) > 0:
+                return
+            grace_until = float(state.get("grace_until") or 0)
+            if grace_until > time.time():
+                return
+            self.presence_by_room.get(client.channel_key, {}).pop(client.user_id, None)
+        self.broadcast_presence(client, False)
+
+    def is_user_online(self, party_id: str, table_id: str, user_id: str) -> bool:
+        if not user_id:
+            return False
+        with self.lock:
+            state = self.presence_by_room.get(room_channel_key(party_id, table_id), {}).get(user_id)
+            if not state:
+                return False
+            return int(state.get("count") or 0) > 0 or float(state.get("grace_until") or 0) > time.time()
+
+    def broadcast(self, channel_key: str, payload: dict, exclude: WebSocketClient | None = None) -> None:
         with self.lock:
             clients = list(self.clients_by_room.get(channel_key, set()))
         for client in clients:
+            if exclude is not None and client is exclude:
+                continue
             if not client.send_json(payload):
                 self.remove(client)
 
@@ -146,6 +210,7 @@ ROOM_WS_HUB = RoomWebSocketHub()
 _QRCODE_CACHE: dict[str, tuple[bytes, str]] = {}
 _URLLINK_CACHE: dict[str, str] = {}
 _QRCODE_CACHE_LOCK = threading.Lock()
+_INVITE_PREWARMING: set[str] = set()
 
 
 def now_sql() -> str:
@@ -498,10 +563,14 @@ def cleanup_expired_content() -> dict:
         if MESSAGE_RETENTION_HOURS > 0:
             rows = conn.execute(
                 """
-                SELECT media_url, quote_media_url FROM messages
-                WHERE sender_type = 'user'
-                  AND kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
-                  AND created_at < datetime('now', '+8 hours', ?)
+                SELECT m.media_url, m.quote_media_url
+                FROM messages m
+                JOIN parties p ON p.id = m.party_id
+                JOIN party_tables t ON t.id = m.table_id
+                WHERE m.sender_type IN ('user', 'admin')
+                  AND m.kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
+                  AND (p.status = 'ended' OR t.status = 'ended')
+                  AND m.created_at < datetime('now', '+8 hours', ?)
                 """,
                 (f"-{MESSAGE_RETENTION_HOURS} hours",),
             ).fetchall()
@@ -510,9 +579,16 @@ def cleanup_expired_content() -> dict:
             cursor = conn.execute(
                 """
                 DELETE FROM messages
-                WHERE sender_type = 'user'
-                  AND kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
-                  AND created_at < datetime('now', '+8 hours', ?)
+                WHERE id IN (
+                  SELECT m.id
+                  FROM messages m
+                  JOIN parties p ON p.id = m.party_id
+                  JOIN party_tables t ON t.id = m.table_id
+                  WHERE m.sender_type IN ('user', 'admin')
+                    AND m.kind IN ('text', 'voice', 'photo', 'video', 'emoji', 'photo_burst')
+                    AND (p.status = 'ended' OR t.status = 'ended')
+                    AND m.created_at < datetime('now', '+8 hours', ?)
+                )
                 """,
                 (f"-{MESSAGE_RETENTION_HOURS} hours",),
             )
@@ -735,21 +811,29 @@ class PartyHandler(BaseHTTPRequestHandler):
                 raise ApiError(404, "WebSocket 地址不存在")
             query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
             client = self.accept_admin_websocket(query) if path == "/ws/admin" else self.accept_room_websocket(query)
-            ROOM_WS_HUB.add(client)
+            presence_events = ROOM_WS_HUB.add(client)
             try:
                 client.send_json({
                     "type": "connected",
                     "partyId": client.party_id,
                     "tableId": client.table_id,
                 })
+                for event in presence_events:
+                    ROOM_WS_HUB.broadcast(client.channel_key, event, exclude=client)
+                    ROOM_WS_HUB.broadcast(admin_channel_key(client.party_id), {
+                        "type": "dashboard.changed",
+                        "reason": "member.presence.updated",
+                        "partyId": client.party_id,
+                        "tableId": client.table_id,
+                    })
                 self.websocket_read_loop(client)
             finally:
                 ROOM_WS_HUB.remove(client)
                 client.closed = True
         except ApiError as exc:
-            self.send_error(exc.status, exc.message)
+            self.send_error(exc.status)
         except Exception as exc:  # pragma: no cover - keeps local dev debuggable.
-            self.send_error(500, str(exc))
+            self.send_error(500)
 
     def accept_admin_websocket(self, query: dict) -> WebSocketClient:
         party_id = require(query, "partyId")
@@ -885,6 +969,8 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.respond(self.user_login(body), status=201)
             elif method == "GET" and path == "/api/party/by-scene":
                 self.respond(self.get_party_by_scene(query))
+            elif method == "GET" and path == "/api/party/current":
+                self.respond(self.get_current_party())
             elif method == "GET" and path == "/api/party/qrcode":
                 self.respond_bytes(*self.get_party_qrcode(query))
             elif method == "POST" and path == "/api/admin/login":
@@ -1059,6 +1145,25 @@ class PartyHandler(BaseHTTPRequestHandler):
                 raise ApiError(410, "该桌已结束")
             return {"ok": True, "party": self.load_party(conn, party_id), "defaultTableId": table_id}
 
+    def get_current_party(self) -> dict:
+        with connect() as conn:
+            table = conn.execute(
+                """
+                SELECT t.*
+                FROM party_tables t
+                JOIN parties p ON p.id = t.party_id
+                WHERE p.status != 'ended'
+                  AND t.status != 'ended'
+                ORDER BY COALESCE(NULLIF(p.starts_at, ''), p.created_at) DESC,
+                         p.created_at DESC,
+                         t.created_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not table:
+                raise ApiError(404, "暂无开放局")
+            return {"ok": True, "party": self.load_party(conn, table["party_id"]), "defaultTableId": table["id"]}
+
     def user_login(self, body: dict) -> dict:
         code = require(body, "code")
         openid = code_to_openid(code)
@@ -1146,6 +1251,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         agreement_requested = bool(body.get("agreementAccepted"))
         age_requested = bool(body.get("ageConfirmed"))
         changed_room_keys: set[str] = set()
+        changed_party_ids: set[str] = set()
 
         with connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1251,29 +1357,36 @@ class PartyHandler(BaseHTTPRequestHandler):
                     )
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             updated_user = public_user(user)
+            changed_rooms = conn.execute(
+                """
+                SELECT party_id, table_id
+                FROM party_members
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
             changed_room_keys = {
                 room_channel_key(row["party_id"], row["table_id"])
-                for row in conn.execute(
-                    """
-                    SELECT party_id, table_id
-                    FROM party_members
-                    WHERE user_id = ?
-                    """,
-                    (user_id,),
-                ).fetchall()
+                for row in changed_rooms
             }
+            changed_party_ids = {row["party_id"] for row in changed_rooms}
+            admin_notify_party_ids: set[str] = set()
+            for changed_party_id in changed_party_ids:
+                admin_notify_party_ids.update(self.load_dashboard_channel_party_ids_for_party(conn, changed_party_id))
         if changed_room_keys:
             for channel_key in changed_room_keys:
                 ROOM_WS_HUB.broadcast(channel_key, {
                     "type": "user.profile.updated",
                     "user": updated_user,
                 })
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "user.profile.updated")
         return {"ok": True, "user": updated_user}
 
     def join_party(self, body: dict) -> dict:
         party_id = require(body, "partyId")
         user_id = require(body, "userId")
         table_id = body.get("tableId")
+        changed_table_ids: set[str] = set()
 
         with connect() as conn:
             party = conn.execute("SELECT * FROM parties WHERE id = ?", (party_id,)).fetchone()
@@ -1301,10 +1414,11 @@ class PartyHandler(BaseHTTPRequestHandler):
                 raise ApiError(410, "该桌已结束")
 
             existing = conn.execute(
-                "SELECT id FROM party_members WHERE party_id = ? AND user_id = ?",
+                "SELECT id, table_id FROM party_members WHERE party_id = ? AND user_id = ?",
                 (party_id, user_id),
             ).fetchone()
             if existing:
+                changed_table_ids.add(existing["table_id"])
                 conn.execute(
                     """
                     UPDATE party_members
@@ -1331,12 +1445,21 @@ class PartyHandler(BaseHTTPRequestHandler):
                     (new_id("msg"), party_id, table_id, user_id, f"{user['nickname']} 加入了 {table['table_no']}"),
                 )
             room = self.load_room(conn, party_id, table_id, user_id)
-        ROOM_WS_HUB.broadcast(admin_channel_key(party_id), {
-            "type": "dashboard.changed",
-            "reason": "member.joined",
-            "partyId": party_id,
-            "tableId": table_id,
-        })
+            changed_table_ids.add(table_id)
+            room_states = {
+                changed_table_id: self.load_room_realtime_state(conn, party_id, changed_table_id)
+                for changed_table_id in changed_table_ids
+            }
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
+        for changed_table_id, state in room_states.items():
+            ROOM_WS_HUB.broadcast(room_channel_key(party_id, changed_table_id), {
+                "type": "room.updated",
+                "reason": "member.joined",
+                "partyId": party_id,
+                "tableId": changed_table_id,
+                **state,
+            })
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "member.joined", party_id=party_id, table_id=table_id)
         return {"ok": True, "memberId": member_id, "room": room}
 
     def get_room(self, query: dict) -> dict:
@@ -1349,15 +1472,85 @@ class PartyHandler(BaseHTTPRequestHandler):
                 self.touch_member(conn, party_id, table_id, user_id)
             return {"ok": True, "room": self.load_room(conn, party_id, table_id, user_id)}
 
+    def load_room_realtime_state(self, conn: sqlite3.Connection, party_id: str, table_id: str) -> dict:
+        table = conn.execute("SELECT * FROM party_tables WHERE id = ? AND party_id = ?", (table_id, party_id)).fetchone()
+        if not table:
+            raise ApiError(404, "桌台不存在")
+        members = conn.execute(
+            """
+            SELECT u.*, m.id AS member_id, m.role, m.seat_status, m.joined_at, m.last_seen_at
+            FROM party_members m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.party_id = ? AND m.table_id = ?
+            ORDER BY CASE WHEN m.seat_status = 'seated' THEN 0 ELSE 1 END, m.joined_at ASC
+            """,
+            (party_id, table_id),
+        ).fetchall()
+        table_data = self.load_table_summary(conn, table)
+        table_data["members"] = [self.public_room_user(row, party_id, table_id, expose_wechat=False) for row in members]
+        if table_data.get("head"):
+            head_row = next((row for row in members if row["member_id"] == table_data["headMemberId"]), None)
+            table_data["head"] = self.public_room_user(head_row, party_id, table_id, expose_wechat=False) if head_row else None
+        return {
+            "party": self.load_party(conn, party_id),
+            "table": table_data,
+            "members": table_data["members"],
+        }
+
+    def load_admin_realtime_party_ids(self, conn: sqlite3.Connection, admin_id: str) -> list[str]:
+        if not conn.execute("SELECT id FROM admins WHERE id = ?", (admin_id,)).fetchone():
+            raise ApiError(404, "管理员不存在")
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM parties
+            WHERE status != 'ended'
+            """
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def load_dashboard_channel_party_ids_for_party(self, conn: sqlite3.Connection, party_id: str) -> list[str]:
+        party = conn.execute("SELECT id FROM parties WHERE id = ?", (party_id,)).fetchone()
+        if not party:
+            return [party_id]
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM parties
+            WHERE status != 'ended'
+            """
+        ).fetchall()
+        party_ids = {row["id"] for row in rows}
+        party_ids.add(party_id)
+        return list(party_ids)
+
+    def broadcast_admin_dashboard_changed(
+        self,
+        party_ids: list[str] | set[str],
+        reason: str,
+        party_id: str = "",
+        table_id: str = "",
+        extra: dict | None = None,
+    ) -> None:
+        payload = {
+            "type": "dashboard.changed",
+            "reason": reason,
+        }
+        if party_id:
+            payload["partyId"] = party_id
+        if table_id:
+            payload["tableId"] = table_id
+        if extra:
+            payload.update(extra)
+        for notify_party_id in sorted({item for item in party_ids if item}):
+            ROOM_WS_HUB.broadcast(admin_channel_key(notify_party_id), payload)
+
     def get_messages(self, query: dict) -> dict:
         party_id = require(query, "partyId")
         table_id = require(query, "tableId")
         after_id = query.get("afterId")
         params: list = [party_id, table_id]
         where = "party_id = ? AND table_id = ?"
-        if MESSAGE_RETENTION_HOURS > 0:
-            where += " AND (sender_type != 'user' OR kind = 'system' OR created_at >= datetime('now', '+8 hours', ?))"
-            params.append(f"-{MESSAGE_RETENTION_HOURS} hours")
         if after_id:
             where += " AND id > ?"
             params.append(after_id)
@@ -1422,18 +1615,14 @@ class PartyHandler(BaseHTTPRequestHandler):
             row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
             message = self.decorate_message(conn, row)
             notification_jobs = self.build_message_subscription_jobs(conn, row, message)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
         ROOM_WS_HUB.broadcast(room_channel_key(party_id, table_id), {
             "type": "message.created",
             "partyId": party_id,
             "tableId": table_id,
             "message": message,
         })
-        ROOM_WS_HUB.broadcast(admin_channel_key(party_id), {
-            "type": "dashboard.changed",
-            "reason": "message.created",
-            "partyId": party_id,
-            "tableId": table_id,
-        })
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "message.created", party_id=party_id, table_id=table_id)
         self.dispatch_message_subscription_jobs(notification_jobs)
         return {"ok": True, "message": message}
 
@@ -1670,12 +1859,14 @@ class PartyHandler(BaseHTTPRequestHandler):
             )
             row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
             report = self.decorate_report(conn, row)
-        ROOM_WS_HUB.broadcast(admin_channel_key(party_id), {
-            "type": "report.created",
-            "partyId": party_id,
-            "tableId": table_id,
-            "report": report,
-        })
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
+        for notify_party_id in admin_notify_party_ids:
+            ROOM_WS_HUB.broadcast(admin_channel_key(notify_party_id), {
+                "type": "report.created",
+                "partyId": party_id,
+                "tableId": table_id,
+                "report": report,
+            })
         return {"ok": True, "report": report}
 
     def get_admin_reports(self, query: dict) -> dict:
@@ -1720,12 +1911,14 @@ class PartyHandler(BaseHTTPRequestHandler):
             )
             updated = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
             report = self.decorate_report(conn, updated)
-        ROOM_WS_HUB.broadcast(admin_channel_key(report["partyId"]), {
-            "type": "report.updated",
-            "partyId": report["partyId"],
-            "tableId": report["tableId"],
-            "report": report,
-        })
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, report["partyId"])
+        for notify_party_id in admin_notify_party_ids:
+            ROOM_WS_HUB.broadcast(admin_channel_key(notify_party_id), {
+                "type": "report.updated",
+                "partyId": report["partyId"],
+                "tableId": report["tableId"],
+                "report": report,
+            })
         return {"ok": True, "report": report}
 
     def delete_message(self, body: dict) -> dict:
@@ -1750,18 +1943,19 @@ class PartyHandler(BaseHTTPRequestHandler):
             )
             updated = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
             message = self.decorate_message(conn, updated)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, message["partyId"])
         ROOM_WS_HUB.broadcast(room_channel_key(message["partyId"], message["tableId"]), {
             "type": "message.updated",
             "partyId": message["partyId"],
             "tableId": message["tableId"],
             "message": message,
         })
-        ROOM_WS_HUB.broadcast(admin_channel_key(message["partyId"]), {
-            "type": "dashboard.changed",
-            "reason": "message.updated",
-            "partyId": message["partyId"],
-            "tableId": message["tableId"],
-        })
+        self.broadcast_admin_dashboard_changed(
+            admin_notify_party_ids,
+            "message.updated",
+            party_id=message["partyId"],
+            table_id=message["tableId"],
+        )
         return {"ok": True, "message": message}
 
     def ban_user(self, body: dict) -> dict:
@@ -1770,12 +1964,15 @@ class PartyHandler(BaseHTTPRequestHandler):
         admin_id = body.get("adminId", "admin_mimei")
         party_id = body.get("partyId")
         reason = (body.get("reason") or "违规使用").strip() or "违规使用"
+        room_channels: set[tuple[str, str]] = set()
+        admin_party_ids: set[str] = set()
         with connect() as conn:
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 raise ApiError(404, "用户不存在")
             if party_id:
                 self.ensure_admin_party(conn, party_id, admin_id)
+                admin_party_ids.add(party_id)
             else:
                 self.ensure_admin_exists(conn, admin_id)
             conn.execute(
@@ -1789,19 +1986,46 @@ class PartyHandler(BaseHTTPRequestHandler):
                 (reason, user_id),
             )
             updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            return {"ok": True, "user": public_user(updated, expose_wechat=True)}
+            memberships = conn.execute(
+                """
+                SELECT DISTINCT party_id, table_id
+                FROM party_members
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+            for membership in memberships:
+                room_channels.add((membership["party_id"], membership["table_id"]))
+                admin_party_ids.add(membership["party_id"])
+            if not admin_party_ids:
+                admin_party_ids.update(self.load_admin_realtime_party_ids(conn, admin_id))
+            public_room_user = public_user(updated, expose_wechat=False)
+            public_admin_user = public_user(updated, expose_wechat=True)
+        for notify_party_id, notify_table_id in room_channels:
+            ROOM_WS_HUB.broadcast(room_channel_key(notify_party_id, notify_table_id), {
+                "type": "user.profile.updated",
+                "reason": "user.banned",
+                "partyId": notify_party_id,
+                "tableId": notify_table_id,
+                "user": public_room_user,
+            })
+        self.broadcast_admin_dashboard_changed(admin_party_ids, "user.banned", party_id=party_id, extra={"userId": user_id})
+        return {"ok": True, "user": public_admin_user}
 
     def unban_user(self, body: dict) -> dict:
         self.require_admin_request(body)
         user_id = require(body, "userId")
         admin_id = body.get("adminId", "admin_mimei")
         party_id = body.get("partyId")
+        room_channels: set[tuple[str, str]] = set()
+        admin_party_ids: set[str] = set()
         with connect() as conn:
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 raise ApiError(404, "用户不存在")
             if party_id:
                 self.ensure_admin_party(conn, party_id, admin_id)
+                admin_party_ids.add(party_id)
             else:
                 self.ensure_admin_exists(conn, admin_id)
             conn.execute(
@@ -1813,7 +2037,31 @@ class PartyHandler(BaseHTTPRequestHandler):
                 (user_id,),
             )
             updated = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            return {"ok": True, "user": public_user(updated, expose_wechat=True)}
+            memberships = conn.execute(
+                """
+                SELECT DISTINCT party_id, table_id
+                FROM party_members
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+            for membership in memberships:
+                room_channels.add((membership["party_id"], membership["table_id"]))
+                admin_party_ids.add(membership["party_id"])
+            if not admin_party_ids:
+                admin_party_ids.update(self.load_admin_realtime_party_ids(conn, admin_id))
+            public_room_user = public_user(updated, expose_wechat=False)
+            public_admin_user = public_user(updated, expose_wechat=True)
+        for notify_party_id, notify_table_id in room_channels:
+            ROOM_WS_HUB.broadcast(room_channel_key(notify_party_id, notify_table_id), {
+                "type": "user.profile.updated",
+                "reason": "user.unbanned",
+                "partyId": notify_party_id,
+                "tableId": notify_table_id,
+                "user": public_room_user,
+            })
+        self.broadcast_admin_dashboard_changed(admin_party_ids, "user.unbanned", party_id=party_id, extra={"userId": user_id})
+        return {"ok": True, "user": public_admin_user}
 
     def decorate_report(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         data = row_to_dict(row)
@@ -1871,26 +2119,27 @@ class PartyHandler(BaseHTTPRequestHandler):
             admin = conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone()
             if not admin:
                 raise ApiError(404, "管理员不存在")
-            party = self.ensure_admin_party(conn, party_id, admin_id) if party_id else self.load_active_admin_party(conn, admin_id)
+            try:
+                party = self.ensure_admin_party(conn, party_id, admin_id) if party_id else self.load_active_admin_party(conn, admin_id)
+            except ApiError as exc:
+                if exc.status != 404:
+                    raise
+                party = self.load_active_admin_party(conn, admin_id)
             if not party:
                 return {"ok": True, "admin": public_admin(admin), "party": None, "tables": []}
-            # Show tables from ALL active (non-ended) parties for this admin,
-            # not just the latest one. This prevents creating a new party from
-            # hiding existing active parties.
+            # Global admins can manage parties across all bars.
             table_rows = conn.execute(
                 """
                 SELECT t.*
                 FROM party_tables t
                 JOIN parties p ON p.id = t.party_id
-                WHERE (p.status != 'ended' AND (p.admin_id = ? OR p.bar_id = ?))
-                   OR (p.status = 'ended' AND (p.admin_id = ? OR p.bar_id = ?))
                 ORDER BY CASE WHEN p.status != 'ended' THEN 0 ELSE 1 END,
                          CASE WHEN p.id = ? THEN 0 ELSE 1 END,
                          t.ended_at DESC,
                          p.starts_at DESC,
                          t.table_no ASC
                 """,
-                (admin_id, admin["bar_id"], admin_id, admin["bar_id"], party["id"]),
+                (party["id"],),
             ).fetchall()
             tables = [self.load_table_summary(conn, row) for row in table_rows]
             return {"ok": True, "admin": public_admin(admin), "party": party, "tables": tables}
@@ -1906,12 +2155,13 @@ class PartyHandler(BaseHTTPRequestHandler):
             self.ensure_admin_party(conn, table["party_id"], admin_id)
             scene = table["share_scene"]
             query_text = f"scene={scene}"
-            link = ""
-            if MINIPROGRAM_APPID and MINIPROGRAM_SECRET:
+            link = _cached_url_link(MINIPROGRAM_ROOM_PAGE, query_text)
+            if not link and MINIPROGRAM_APPID and MINIPROGRAM_SECRET:
                 try:
                     link = self.generate_url_link(MINIPROGRAM_ROOM_PAGE, query_text)
                 except ApiError as exc:
                     print(f"generate url link failed for table {table_id}: {exc.message}")
+            _ensure_invite_cache_async(scene, MINIPROGRAM_ROOM_PAGE)
             return {
                 "ok": True,
                 "partyId": table["party_id"],
@@ -2016,6 +2266,8 @@ class PartyHandler(BaseHTTPRequestHandler):
         display_name = (body.get("displayName") or "").strip()
         if not wechat_id:
             raise ApiError(400, "管理员微信不能为空")
+        room_updates: list[tuple[str, str, dict]] = []
+        admin_party_ids: set[str] = set()
         with connect() as conn:
             admin = conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone()
             if not admin:
@@ -2029,7 +2281,32 @@ class PartyHandler(BaseHTTPRequestHandler):
                 (wechat_id, display_name, admin_id),
             )
             updated = conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone()
-            return {"ok": True, "admin": public_admin(updated)}
+            tables = conn.execute(
+                """
+                SELECT t.party_id, t.id AS table_id
+                FROM party_tables t
+                JOIN parties p ON p.id = t.party_id
+                WHERE p.status != 'ended' AND t.status != 'ended'
+                """
+            ).fetchall()
+            for table in tables:
+                admin_party_ids.add(table["party_id"])
+                room_updates.append((
+                    table["party_id"],
+                    table["table_id"],
+                    self.load_room_realtime_state(conn, table["party_id"], table["table_id"]),
+                ))
+            public_updated = public_admin(updated)
+        for notify_party_id, notify_table_id, state in room_updates:
+            ROOM_WS_HUB.broadcast(room_channel_key(notify_party_id, notify_table_id), {
+                "type": "room.updated",
+                "reason": "admin.profile.updated",
+                "partyId": notify_party_id,
+                "tableId": notify_table_id,
+                **state,
+            })
+        self.broadcast_admin_dashboard_changed(admin_party_ids, "admin.profile.updated")
+        return {"ok": True, "admin": public_updated}
 
     def create_admin_party(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2083,12 +2360,27 @@ class PartyHandler(BaseHTTPRequestHandler):
             )
             party = self.load_party(conn, party_id)
             table = conn.execute("SELECT * FROM party_tables WHERE id = ?", (table_id,)).fetchone()
+            table_rows = conn.execute(
+                """
+                SELECT t.*
+                FROM party_tables t
+                JOIN parties p ON p.id = t.party_id
+                WHERE p.status != 'ended'
+                ORDER BY CASE WHEN p.id = ? THEN 0 ELSE 1 END,
+                         p.starts_at DESC,
+                         t.table_no ASC
+                """,
+                (party_id,),
+            ).fetchall()
+            tables = [self.load_table_summary(conn, row) for row in table_rows]
+            admin_party_ids = {row["party_id"] for row in table_rows}
 
         # Pre-generate QR code and URL link in background so the first
         # invite/share request is instant instead of blocking on WeChat.
         _prewarm_invite_cache(share_scene, MINIPROGRAM_ROOM_PAGE, scene_code)
 
-        return {"ok": True, "party": party, "tables": [self.load_table_summary(conn, table)]}
+        self.broadcast_admin_dashboard_changed(admin_party_ids, "party.created", party_id=party_id, table_id=table_id)
+        return {"ok": True, "party": party, "table": self.load_table_summary(conn, table), "tables": tables}
 
     def update_admin_party(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2146,7 +2438,18 @@ class PartyHandler(BaseHTTPRequestHandler):
             )
             updated_party = self.load_party(conn, party_id)
             updated_table = conn.execute("SELECT * FROM party_tables WHERE id = ?", (table_id,)).fetchone()
-            return {"ok": True, "party": updated_party, "table": self.load_table_summary(conn, updated_table)}
+            table_data = self.load_table_summary(conn, updated_table)
+            room_state = self.load_room_realtime_state(conn, party_id, table_id)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
+        ROOM_WS_HUB.broadcast(room_channel_key(party_id, table_id), {
+            "type": "room.updated",
+            "reason": "party.updated",
+            "partyId": party_id,
+            "tableId": table_id,
+            **room_state,
+        })
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "party.updated", party_id=party_id, table_id=table_id)
+        return {"ok": True, "party": updated_party, "table": table_data}
 
     def end_admin_party(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2155,6 +2458,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         ended_channels: list[str] = []
         with connect() as conn:
             self.ensure_admin_party(conn, party_id, admin_id)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
             table_rows = conn.execute("SELECT id FROM party_tables WHERE party_id = ?", (party_id,)).fetchall()
             ended_channels = [room_channel_key(party_id, row["id"]) for row in table_rows]
             conn.execute(
@@ -2183,11 +2487,7 @@ class PartyHandler(BaseHTTPRequestHandler):
                 "type": "party.ended",
                 "partyId": party_id,
             })
-        ROOM_WS_HUB.broadcast(admin_channel_key(party_id), {
-            "type": "dashboard.changed",
-            "reason": "party.ended",
-            "partyId": party_id,
-        })
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "party.ended", party_id=party_id)
         return {"ok": True, "party": party, "tables": tables}
 
     def delete_ended_parties(self, body: dict) -> dict:
@@ -2200,7 +2500,9 @@ class PartyHandler(BaseHTTPRequestHandler):
         if not party_ids:
             raise ApiError(400, "请选择要删除的局")
         deleted: list[str] = []
+        admin_party_ids: set[str] = set(party_ids)
         with connect() as conn:
+            admin_party_ids.update(self.load_admin_realtime_party_ids(conn, admin_id))
             for party_id in party_ids:
                 self.ensure_admin_party(conn, party_id, admin_id)
                 party = conn.execute("SELECT status FROM parties WHERE id = ?", (party_id,)).fetchone()
@@ -2223,6 +2525,11 @@ class PartyHandler(BaseHTTPRequestHandler):
                 conn.execute("DELETE FROM contact_requests WHERE party_id = ?", (party_id,))
                 conn.execute("DELETE FROM parties WHERE id = ?", (party_id,))
                 deleted.append(party_id)
+        self.broadcast_admin_dashboard_changed(
+            admin_party_ids,
+            "party.deleted",
+            extra={"deletedPartyIds": deleted},
+        )
         return {"ok": True, "deletedPartyIds": deleted}
 
     def set_member_seat_status(self, body: dict) -> dict:
@@ -2251,19 +2558,24 @@ class PartyHandler(BaseHTTPRequestHandler):
             table = conn.execute("SELECT * FROM party_tables WHERE id = ?", (row["table_id"],)).fetchone()
             member = public_user(updated, expose_wechat=False)
             table_data = self.load_table_summary(conn, table) if table else None
+            room_table_data = dict(table_data) if table_data else None
+            if room_table_data:
+                room_table_data.pop("members", None)
+                room_table_data.pop("head", None)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, row["party_id"])
         ROOM_WS_HUB.broadcast(room_channel_key(row["party_id"], row["table_id"]), {
             "type": "member.updated",
             "partyId": row["party_id"],
             "tableId": row["table_id"],
             "member": member,
-            "table": table_data,
+            "table": room_table_data,
         })
-        ROOM_WS_HUB.broadcast(admin_channel_key(row["party_id"]), {
-            "type": "dashboard.changed",
-            "reason": "member.updated",
-            "partyId": row["party_id"],
-            "tableId": row["table_id"],
-        })
+        self.broadcast_admin_dashboard_changed(
+            admin_notify_party_ids,
+            "member.updated",
+            party_id=row["party_id"],
+            table_id=row["table_id"],
+        )
         return {
             "ok": True,
             "memberId": member_id,
@@ -2300,7 +2612,23 @@ class PartyHandler(BaseHTTPRequestHandler):
                 )
                 conn.execute("UPDATE party_tables SET head_member_id = NULL WHERE id = ?", (table_id,))
             updated = conn.execute("SELECT * FROM party_tables WHERE id = ?", (table_id,)).fetchone()
-            return {"ok": True, "table": self.load_table_summary(conn, updated)}
+            table_data = self.load_table_summary(conn, updated)
+            room_state = self.load_room_realtime_state(conn, table["party_id"], table_id)
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, table["party_id"])
+        ROOM_WS_HUB.broadcast(room_channel_key(table["party_id"], table_id), {
+            "type": "room.updated",
+            "reason": "table.head.updated",
+            "partyId": table["party_id"],
+            "tableId": table_id,
+            **room_state,
+        })
+        self.broadcast_admin_dashboard_changed(
+            admin_notify_party_ids,
+            "table.head.updated",
+            party_id=table["party_id"],
+            table_id=table_id,
+        )
+        return {"ok": True, "table": table_data}
 
     def kick_member(self, body: dict) -> dict:
         self.require_admin_request(body)
@@ -2319,7 +2647,34 @@ class PartyHandler(BaseHTTPRequestHandler):
                 """,
                 (new_id("msg"), row["party_id"], row["table_id"], "admin_mimei"),
             )
-            return {"ok": True, "memberId": member_id}
+            recent = conn.execute(
+                "SELECT * FROM messages WHERE party_id = ? AND table_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (row["party_id"], row["table_id"]),
+            ).fetchone()
+            message = self.decorate_message(conn, recent)
+            room_state = self.load_room_realtime_state(conn, row["party_id"], row["table_id"])
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, row["party_id"])
+        ROOM_WS_HUB.broadcast(room_channel_key(row["party_id"], row["table_id"]), {
+            "type": "member.removed",
+            "partyId": row["party_id"],
+            "tableId": row["table_id"],
+            "memberId": member_id,
+            **room_state,
+        })
+        if message:
+            ROOM_WS_HUB.broadcast(room_channel_key(row["party_id"], row["table_id"]), {
+                "type": "message.created",
+                "partyId": row["party_id"],
+                "tableId": row["table_id"],
+                "message": message,
+            })
+        self.broadcast_admin_dashboard_changed(
+            admin_notify_party_ids,
+            "member.removed",
+            party_id=row["party_id"],
+            table_id=row["table_id"],
+        )
+        return {"ok": True, "memberId": member_id}
 
     def request_contact(self, body: dict) -> dict:
         party_id = require(body, "partyId")
@@ -2344,22 +2699,21 @@ class PartyHandler(BaseHTTPRequestHandler):
                 (request_id, party_id, requester_type, requester_id, target_type, target_id),
             )
             target = self.load_contact_target(conn, target_type, target_id)
-            return {"ok": True, "requestId": request_id, "contact": target}
+            admin_notify_party_ids = self.load_dashboard_channel_party_ids_for_party(conn, party_id)
+        self.broadcast_admin_dashboard_changed(admin_notify_party_ids, "contact.requested", party_id=party_id)
+        return {"ok": True, "requestId": request_id, "contact": target}
 
     def load_active_admin_party(self, conn: sqlite3.Connection, admin_id: str) -> dict | None:
-        admin = conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone()
-        if not admin:
+        if not conn.execute("SELECT id FROM admins WHERE id = ?", (admin_id,)).fetchone():
             raise ApiError(404, "管理员不存在")
         row = conn.execute(
             """
             SELECT p.*
             FROM parties p
             WHERE p.status != 'ended'
-              AND (p.admin_id = ? OR p.bar_id = ?)
             ORDER BY COALESCE(NULLIF(p.starts_at, ''), p.created_at) DESC, p.created_at DESC
             LIMIT 1
-            """,
-            (admin_id, admin["bar_id"]),
+            """
         ).fetchone()
         return self.load_party(conn, row["id"]) if row else None
 
@@ -2409,9 +2763,6 @@ class PartyHandler(BaseHTTPRequestHandler):
         ).fetchall()
         message_where = "party_id = ? AND table_id = ?"
         message_params: list = [party_id, table_id]
-        if MESSAGE_RETENTION_HOURS > 0:
-            message_where += " AND (sender_type != 'user' OR kind = 'system' OR created_at >= datetime('now', '+8 hours', ?))"
-            message_params.append(f"-{MESSAGE_RETENTION_HOURS} hours")
         messages = conn.execute(
             f"""
             SELECT * FROM messages
@@ -2424,7 +2775,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         return {
             "party": party,
             "table": table_summary(table, len([m for m in members if m["seat_status"] == "seated"]), len(members)),
-            "members": [public_user(row, expose_wechat=False) for row in members],
+                "members": [self.public_room_user(row, party_id, table_id, expose_wechat=False) for row in members],
             "viewer": {"userId": viewer_user_id, "canSeeOtherUserWechat": False},
             "messages": [self.decorate_message(conn, row) for row in reversed(messages)],
         }
@@ -2483,7 +2834,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         summary["barAddress"] = party["bar_address"] if party else ""
         summary["latitude"] = party["latitude"] if party else None
         summary["longitude"] = party["longitude"] if party else None
-        summary["members"] = [public_user(row, expose_wechat=True) for row in members]
+        summary["members"] = [self.public_room_user(row, table["party_id"], table["id"], expose_wechat=True) for row in members]
         head = None
         if table["head_member_id"]:
             head = next((row for row in members if row["member_id"] == table["head_member_id"]), None)
@@ -2491,7 +2842,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             head = next((row for row in members if row["role"] == "head"), None)
         if head:
             summary["headMemberId"] = head["member_id"]
-            summary["head"] = public_user(head, expose_wechat=True)
+            summary["head"] = self.public_room_user(head, table["party_id"], table["id"], expose_wechat=True)
         else:
             summary["headMemberId"] = None
             summary["head"] = None
@@ -2499,6 +2850,17 @@ class PartyHandler(BaseHTTPRequestHandler):
         summary["messageCount"] = message_count
         summary["photoBurstCount"] = photo_count
         return summary
+
+    def public_room_user(
+        self,
+        row: sqlite3.Row,
+        party_id: str,
+        table_id: str,
+        expose_wechat: bool = False,
+    ) -> dict:
+        data = public_user(row, expose_wechat=expose_wechat)
+        data["online"] = ROOM_WS_HUB.is_user_online(party_id, table_id, data["id"])
+        return data
 
     def decorate_message(self, conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict | None:
         if not row:
@@ -2549,7 +2911,7 @@ class PartyHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not user:
                 raise ApiError(404, "用户不存在")
-            return public_user(user, expose_wechat=False)
+            return self.public_room_user(user, row["party_id"], row["table_id"], expose_wechat=False)
         return self.load_contact_target(conn, row["sender_type"], row["sender_id"], expose_private=False)
 
     def ensure_sender(self, conn: sqlite3.Connection, sender_type: str, sender_id: str) -> None:
@@ -2634,10 +2996,7 @@ class PartyHandler(BaseHTTPRequestHandler):
         party = self.load_party(conn, party_id)
         if not party:
             raise ApiError(404, "主局不存在")
-        admin = conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone()
-        owns_party = party["admin"]["id"] == admin_id
-        manages_same_bar = bool(admin and admin["bar_id"] == party["bar"]["id"])
-        if not owns_party and not manages_same_bar:
+        if not conn.execute("SELECT id FROM admins WHERE id = ?", (admin_id,)).fetchone():
             raise ApiError(403, "无管理员权限")
         return party
 
@@ -2700,7 +3059,7 @@ def public_user(row: sqlite3.Row, expose_wechat: bool = False) -> dict:
         "memberId": row["member_id"] if "member_id" in row.keys() else None,
         "seatStatus": row["seat_status"] if "seat_status" in row.keys() else "ghost",
         "lastSeenAt": last_seen_at,
-        "online": is_recently_seen(last_seen_at),
+        "online": False,
         "agreementAcceptedAt": row["agreement_accepted_at"] if "agreement_accepted_at" in row.keys() else None,
         "ageConfirmedAt": row["age_confirmed_at"] if "age_confirmed_at" in row.keys() else None,
         "bannedAt": row["banned_at"] if "banned_at" in row.keys() else None,
@@ -2710,16 +3069,6 @@ def public_user(row: sqlite3.Row, expose_wechat: bool = False) -> dict:
         data["wechatId"] = row["wechat_id"]
         data["phone"] = row["phone"]
     return data
-
-
-def is_recently_seen(value: str | None) -> bool:
-    if not value:
-        return False
-    try:
-        seen_at = time.mktime(time.strptime(value, "%Y-%m-%d %H:%M:%S"))
-    except ValueError:
-        return False
-    return time.time() - seen_at <= ONLINE_WINDOW_SECONDS
 
 
 def table_summary(row: sqlite3.Row, seated_count: int, total_count: int) -> dict:
@@ -2742,60 +3091,83 @@ def table_summary(row: sqlite3.Row, seated_count: int, total_count: int) -> dict
     }
 
 
-def _prewarm_invite_cache(share_scene: str, room_page: str, scene_code: str = "") -> None:
-    """Pre-generate QR code and URL link in a background thread.
-
-    Called after creating a party so that the first admin invite or user
-    join request doesn't block on the WeChat API.
-    """
-
-    def _prewarm() -> None:
-        scenes = [share_scene]
-        if scene_code:
-            scenes.append(scene_code)
-        for scene in scenes:
-            cache_key = f"{scene}:{room_page}:{MINIPROGRAM_ENV_VERSION}"
-            with _QRCODE_CACHE_LOCK:
-                if cache_key in _QRCODE_CACHE:
-                    continue
-            try:
-                token = get_wechat_access_token()
-                url = f"https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token={token}"
-                result = http_bytes(url, {
-                    "scene": scene,
-                    "page": room_page,
-                    "check_path": False,
-                    "env_version": MINIPROGRAM_ENV_VERSION,
-                    "width": 430,
-                })
-                with _QRCODE_CACHE_LOCK:
-                    _QRCODE_CACHE[cache_key] = result
-            except Exception as exc:
-                print(f"prewarm qrcode failed for scene {scene}: {exc}")
-
-        # Also pre-generate the URL link for the table share scene
-        query_text = f"scene={share_scene}"
-        link_cache_key = f"{room_page}:{query_text}:{MINIPROGRAM_ENV_VERSION}"
+def _prewarm_invite_cache_now(share_scene: str, room_page: str, scene_code: str = "") -> None:
+    scenes = [share_scene]
+    if scene_code:
+        scenes.append(scene_code)
+    for scene in scenes:
+        cache_key = f"{scene}:{room_page}:{MINIPROGRAM_ENV_VERSION}"
         with _QRCODE_CACHE_LOCK:
-            if link_cache_key in _URLLINK_CACHE:
-                return
+            if cache_key in _QRCODE_CACHE:
+                continue
         try:
             token = get_wechat_access_token()
-            url = f"https://api.weixin.qq.com/wxa/generate_urllink?access_token={token}"
-            result = http_json(url, {
-                "path": room_page,
-                "query": query_text,
-                "is_expire": False,
+            url = f"https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token={token}"
+            result = http_bytes(url, {
+                "scene": scene,
+                "page": room_page,
+                "check_path": False,
                 "env_version": MINIPROGRAM_ENV_VERSION,
+                "width": 430,
             })
-            url_link = result.get("url_link", "")
-            if url_link:
-                with _QRCODE_CACHE_LOCK:
-                    _URLLINK_CACHE[link_cache_key] = url_link
+            with _QRCODE_CACHE_LOCK:
+                _QRCODE_CACHE[cache_key] = result
         except Exception as exc:
-            print(f"prewarm urllink failed for {share_scene}: {exc}")
+            print(f"prewarm qrcode failed for scene {scene}: {exc}")
 
-    thread = threading.Thread(target=_prewarm, name="invite-cache-prewarm", daemon=True)
+    query_text = f"scene={share_scene}"
+    link_cache_key = f"{room_page}:{query_text}:{MINIPROGRAM_ENV_VERSION}"
+    with _QRCODE_CACHE_LOCK:
+        if link_cache_key in _URLLINK_CACHE:
+            return
+    try:
+        token = get_wechat_access_token()
+        url = f"https://api.weixin.qq.com/wxa/generate_urllink?access_token={token}"
+        result = http_json(url, {
+            "path": room_page,
+            "query": query_text,
+            "is_expire": False,
+            "env_version": MINIPROGRAM_ENV_VERSION,
+        })
+        url_link = result.get("url_link", "")
+        if url_link:
+            with _QRCODE_CACHE_LOCK:
+                _URLLINK_CACHE[link_cache_key] = url_link
+    except Exception as exc:
+        print(f"prewarm urllink failed for {share_scene}: {exc}")
+
+
+def _prewarm_invite_cache(share_scene: str, room_page: str, scene_code: str = "") -> None:
+    """Pre-generate QR code and URL link in a background thread."""
+    thread = threading.Thread(
+        target=lambda: _prewarm_invite_cache_now(share_scene, room_page, scene_code),
+        name="invite-cache-prewarm",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _cached_url_link(path: str, query: str) -> str:
+    cache_key = f"{path}:{query}:{MINIPROGRAM_ENV_VERSION}"
+    with _QRCODE_CACHE_LOCK:
+        return _URLLINK_CACHE.get(cache_key, "")
+
+
+def _ensure_invite_cache_async(share_scene: str, room_page: str, scene_code: str = "") -> None:
+    key = f"{share_scene}:{room_page}:{MINIPROGRAM_ENV_VERSION}"
+    with _QRCODE_CACHE_LOCK:
+        if key in _INVITE_PREWARMING:
+            return
+        _INVITE_PREWARMING.add(key)
+
+    def _run() -> None:
+        try:
+            _prewarm_invite_cache_now(share_scene, room_page, scene_code)
+        finally:
+            with _QRCODE_CACHE_LOCK:
+                _INVITE_PREWARMING.discard(key)
+
+    thread = threading.Thread(target=_run, name="invite-cache-ensure", daemon=True)
     thread.start()
 
 
